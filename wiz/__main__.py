@@ -43,7 +43,8 @@ def cmd_scan(args):
         else:
             if not is_json:
                 print(f"Quick scanning {root} ...\n")
-            report_obj = scan_quick(root, language_filter=lang, use_cache=use_cache)
+            workers = getattr(args, "workers", 4)
+            report_obj = scan_quick(root, language_filter=lang, use_cache=use_cache, max_workers=workers)
     except KeyboardInterrupt:
         print("\n\nScan interrupted by user.", file=sys.stderr)
         print("Partial results may have been saved.", file=sys.stderr)
@@ -246,6 +247,8 @@ def main():
     p_scan.add_argument("--output", choices=["text", "json"], default="text",
                          help="Output format (default: text)")
     p_scan.add_argument("--baseline", help="Compare against baseline (use 'latest' or report path)")
+    p_scan.add_argument("--workers", type=int, default=4, metavar="N",
+                         help="Number of parallel workers for quick scan (default: 4, use 1 for sequential)")
     p_scan.set_defaults(func=cmd_scan)
 
     # debug
