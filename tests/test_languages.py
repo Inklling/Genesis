@@ -1,0 +1,525 @@
+"""Tests for languages module - regex rule compilation and pattern matching."""
+
+import pytest
+import re
+from wiz.languages import (
+    get_rules_for_language,
+    UNIVERSAL_RULES,
+    PYTHON_RULES,
+    JAVASCRIPT_RULES,
+    GO_RULES,
+    RUST_RULES,
+    SECURITY_RULES,
+)
+from wiz.config import Severity, Category
+
+
+def test_get_rules_for_language_python():
+    """Test that Python gets universal + security + python rules."""
+    rules = get_rules_for_language("python")
+    
+    # Should have all rule groups combined
+    expected_count = len(UNIVERSAL_RULES) + len(SECURITY_RULES) + len(PYTHON_RULES)
+    assert len(rules) == expected_count
+
+
+def test_get_rules_for_language_javascript():
+    """Test that JavaScript gets universal + security + javascript rules."""
+    rules = get_rules_for_language("javascript")
+    
+    expected_count = len(UNIVERSAL_RULES) + len(SECURITY_RULES) + len(JAVASCRIPT_RULES)
+    assert len(rules) == expected_count
+
+
+def test_get_rules_for_language_typescript():
+    """Test that TypeScript shares JavaScript rules."""
+    rules_ts = get_rules_for_language("typescript")
+    rules_js = get_rules_for_language("javascript")
+    
+    assert len(rules_ts) == len(rules_js)
+
+
+def test_get_rules_for_language_go():
+    """Test that Go gets universal + security + go rules."""
+    rules = get_rules_for_language("go")
+    
+    expected_count = len(UNIVERSAL_RULES) + len(SECURITY_RULES) + len(GO_RULES)
+    assert len(rules) == expected_count
+
+
+def test_get_rules_for_language_rust():
+    """Test that Rust gets universal + security + rust rules."""
+    rules = get_rules_for_language("rust")
+    
+    expected_count = len(UNIVERSAL_RULES) + len(SECURITY_RULES) + len(RUST_RULES)
+    assert len(rules) == expected_count
+
+
+def test_get_rules_for_language_unknown():
+    """Test that unknown languages get only universal + security rules."""
+    rules = get_rules_for_language("unknown")
+    
+    expected_count = len(UNIVERSAL_RULES) + len(SECURITY_RULES)
+    assert len(rules) == expected_count
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# UNIVERSAL RULES
+# ───────────────────────────────────────────────────────────────────────────
+
+def test_universal_hardcoded_secret():
+    """Test detection of hardcoded secrets."""
+    rules = get_rules_for_language("python")
+    pattern = next(r for r in rules if r[3] == "hardcoded-secret")[0]
+    
+    # Should match
+    assert pattern.search('api_key = "abc123defgh456"')
+    assert pattern.search('secret_key: "token_xyz_1234567890"')
+    assert pattern.search('password="Pass123456"')
+    assert pattern.search("TOKEN = 'abcdefgh12345678'")
+    
+    # Should NOT match (too short)
+    assert not pattern.search('api_key = "short"')
+    assert not pattern.search('password=""')
+
+
+def test_universal_aws_credentials():
+    """Test detection of AWS credentials."""
+    rules = get_rules_for_language("python")
+    pattern = next(r for r in rules if r[3] == "aws-credentials")[0]
+    
+    # Should match (with optional underscore/hyphen between aws and access/secret)
+    assert pattern.search('aws_access="AKIAIOSFODNN7EXAMPLE"')
+    assert pattern.search('AWS_SECRET="SecretKey123456789"')
+    assert pattern.search('aws-access="AKIAIOSFODNN7EXAMPLE"')
+    assert pattern.search('awsaccess: "AKIAIOSFODNN7EXAMPLE"')
+    
+    # Should NOT match (too short)
+    assert not pattern.search('aws_key = "short"')
+
+
+def test_universal_todo_marker():
+    """Test TODO/FIXME detection in comments."""
+    rules = get_rules_for_language("python")
+    pattern = next(r for r in rules if r[3] == "todo-marker")[0]
+    
+    # Should match (with comment prefix)
+    assert pattern.search("# TODO: fix this")
+    assert pattern.search("// TODO: implement")
+    assert pattern.search("# FIXME urgent")
+    assert pattern.search("// HACK workaround")
+    assert pattern.search("# XXX check this")
+    
+    # Should NOT match (no comment prefix)
+    assert not pattern.search("TODO: not in comment")
+    assert not pattern.search("FIXME without prefix")
+
+
+def test_universal_long_line():
+    """Test long line detection."""
+    rules = get_rules_for_language("python")
+    pattern = next(r for r in rules if r[3] == "long-line")[0]
+    
+    # Should match (>200 chars)
+    long_line = "x" * 201
+    assert pattern.search(long_line)
+    
+    # Should NOT match (<=200 chars)
+    short_line = "x" * 200
+    assert not pattern.search(short_line)
+
+
+def test_universal_insecure_http():
+    """Test insecure HTTP detection."""
+    rules = get_rules_for_language("python")
+    pattern = next(r for r in rules if r[3] == "insecure-http")[0]
+    
+    # Should match (non-localhost HTTP)
+    assert pattern.search('"http://example.com"')
+    assert pattern.search("'http://api.service.com'")
+    
+    # Should NOT match (HTTPS or localhost)
+    assert not pattern.search('"https://example.com"')
+    assert not pattern.search('"http://localhost"')
+    assert not pattern.search('"http://127.0.0.1"')
+    assert not pattern.search('"http://0.0.0.0"')
+
+
+def test_universal_sql_injection():
+    """Test SQL injection pattern detection."""
+    rules = get_rules_for_language("python")
+    pattern = next(r for r in rules if r[3] == "sql-injection")[0]
+    
+    # Should match (string interpolation in queries)
+    assert pattern.search('execute(f"SELECT * FROM {table}")')
+    assert pattern.search("query('SELECT * FROM ' + table)")
+    assert pattern.search('cursor.execute("SELECT %s" % data)')
+    
+    # Should NOT match (parameterized)
+    assert not pattern.search('execute("SELECT * FROM table WHERE id = ?", (id,))')
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# PYTHON RULES
+# ───────────────────────────────────────────────────────────────────────────
+
+def test_python_bare_except():
+    """Test bare except detection."""
+    rules = get_rules_for_language("python")
+    pattern = next(r for r in rules if r[3] == "bare-except")[0]
+    
+    # Should match
+    assert pattern.search("except:")
+    assert pattern.search("    except:")
+    
+    # Should NOT match
+    assert not pattern.search("except Exception:")
+    assert not pattern.search("except ValueError:")
+
+
+def test_python_mutable_default():
+    """Test mutable default argument detection."""
+    rules = get_rules_for_language("python")
+    pattern = next(r for r in rules if r[3] == "mutable-default")[0]
+    
+    # Should match
+    assert pattern.search("def func(arg=[])")
+    assert pattern.search("def func(arg={})")
+    assert pattern.search("def func(arg=set())")
+    assert pattern.search("def func(a, b=[], c=5)")
+    
+    # Should NOT match
+    assert not pattern.search("def func(arg=None)")
+    assert not pattern.search("def func(arg=5)")
+    assert not pattern.search("def func(arg='string')")
+
+
+def test_python_none_comparison():
+    """Test None comparison detection."""
+    rules = get_rules_for_language("python")
+    pattern = next(r for r in rules if r[3] == "none-comparison")[0]
+    
+    # Should match
+    assert pattern.search("if x == None:")
+    assert pattern.search("if value != None:")
+    
+    # Should NOT match
+    assert not pattern.search("if x is None:")
+    assert not pattern.search("if x is not None:")
+
+
+def test_python_eval_usage():
+    """Test eval() detection."""
+    rules = get_rules_for_language("python")
+    pattern = next(r for r in rules if r[3] == "eval-usage")[0]
+    
+    # Should match
+    assert pattern.search("result = eval(user_input)")
+    assert pattern.search("x = eval('1 + 1')")
+    
+    # Should NOT match (need word boundary)
+    assert not pattern.search("evaluate_expression()")  # 'eval' part of larger word
+
+
+def test_python_exec_usage():
+    """Test exec() detection."""
+    rules = get_rules_for_language("python")
+    pattern = next(r for r in rules if r[3] == "exec-usage")[0]
+    
+    # Should match
+    assert pattern.search("exec(code)")
+    assert pattern.search("exec('print(1)')")
+
+
+def test_python_open_without_with():
+    """Test file open without with statement."""
+    rules = get_rules_for_language("python")
+    pattern = next(r for r in rules if r[3] == "open-without-with")[0]
+    
+    # Should match
+    assert pattern.search("f = open('file.txt')")
+    assert pattern.search("    file = open('data.json')")
+    
+    # Should NOT match
+    assert not pattern.search("with open('file.txt') as f:")
+    assert not pattern.search("    with open('file.txt') as f:")
+
+
+def test_python_os_system():
+    """Test os.system() detection."""
+    rules = get_rules_for_language("python")
+    pattern = next(r for r in rules if r[3] == "os-system")[0]
+    
+    # Should match
+    assert pattern.search("os.system('ls')")
+    assert pattern.search("result = os.system(cmd)")
+
+
+def test_python_shell_true():
+    """Test subprocess with shell=True detection."""
+    rules = get_rules_for_language("python")
+    pattern = next(r for r in rules if r[3] == "shell-true")[0]
+    
+    # Should match
+    assert pattern.search("subprocess.run(cmd, shell=True)")
+    assert pattern.search("subprocess.Popen(cmd, shell=True)")
+    assert pattern.search("subprocess.call(cmd, shell = True)")
+
+
+def test_python_star_import():
+    """Test star import detection."""
+    rules = get_rules_for_language("python")
+    pattern = next(r for r in rules if r[3] == "star-import")[0]
+    
+    # Should match
+    assert pattern.search("from module import *")
+    assert pattern.search("from package.module import *")
+    
+    # Should NOT match
+    assert not pattern.search("from module import Class")
+    assert not pattern.search("import module")
+
+
+def test_python_assert_statement():
+    """Test assert statement detection."""
+    rules = get_rules_for_language("python")
+    pattern = next(r for r in rules if r[3] == "assert-statement")[0]
+    
+    # Should match
+    assert pattern.search("assert x > 0")
+    assert pattern.search("    assert value is not None")
+    
+    # Should NOT match (not at start of statement)
+    assert not pattern.search("# assert is dangerous")
+
+
+def test_python_fstring_no_expr():
+    """Test f-string without expression."""
+    rules = get_rules_for_language("python")
+    pattern = next(r for r in rules if r[3] == "fstring-no-expr")[0]
+    
+    # Should match (no expressions)
+    assert pattern.search('f"hello world"')
+    assert pattern.search("f'static string'")
+    
+    # Should NOT match (has expressions)
+    assert not pattern.search('f"hello {name}"')
+    assert not pattern.search("f'value: {x}'")
+
+
+def test_python_pickle_unsafe():
+    """Test unsafe pickle detection."""
+    rules = get_rules_for_language("python")
+    pattern = next(r for r in rules if r[3] == "pickle-unsafe")[0]
+    
+    # Should match
+    assert pattern.search("data = pickle.load(file)")
+    assert pattern.search("obj = pickle.loads(bytes)")
+
+
+def test_python_yaml_unsafe():
+    """Test unsafe yaml.load detection - BUG NOW FIXED."""
+    rules = get_rules_for_language("python")
+    pattern = next(r for r in rules if r[3] == "yaml-unsafe")[0]
+    
+    # Should match (unsafe yaml.load without SafeLoader)
+    assert pattern.search("data = yaml.load(file)")
+    assert pattern.search("config = yaml.load(content)")
+    
+    # BUG FIX: These should NOT match and now they don't
+    # The negative lookahead now correctly excludes SafeLoader
+    assert not pattern.search("yaml.load(f, Loader=yaml.SafeLoader)")
+    assert not pattern.search("yaml.load(data, Loader=yaml.SafeLoader)")
+
+
+def test_python_weak_hash():
+    """Test weak hash algorithm detection."""
+    rules = get_rules_for_language("python")
+    pattern = next(r for r in rules if r[3] == "weak-hash")[0]
+    
+    # Should match
+    assert pattern.search("h = hashlib.md5()")
+    assert pattern.search("hash = hashlib.sha1()")
+    
+    # Should NOT match
+    assert not pattern.search("h = hashlib.sha256()")
+    assert not pattern.search("hash = hashlib.sha512()")
+
+
+def test_python_weak_random():
+    """Test weak random detection."""
+    rules = get_rules_for_language("python")
+    pattern = next(r for r in rules if r[3] == "weak-random")[0]
+    
+    # Should match
+    assert pattern.search("x = random.choice(items)")
+    assert pattern.search("num = random.randint(1, 100)")
+    assert pattern.search("val = random.random()")
+    assert pattern.search("random.shuffle(list)")
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# JAVASCRIPT RULES
+# ───────────────────────────────────────────────────────────────────────────
+
+def test_javascript_var_usage():
+    """Test var keyword detection."""
+    rules = get_rules_for_language("javascript")
+    pattern = next(r for r in rules if r[3] == "var-usage")[0]
+    
+    # Should match
+    assert pattern.search("var x = 5;")
+    assert pattern.search("var oldStyle = true;")
+    
+    # Should NOT match
+    assert not pattern.search("let x = 5;")
+    assert not pattern.search("const x = 5;")
+
+
+def test_javascript_loose_equality():
+    """Test loose equality (==) detection."""
+    rules = get_rules_for_language("javascript")
+    pattern = next(r for r in rules if r[3] == "loose-equality")[0]
+    
+    # Should match
+    assert pattern.search("if (x == 5)")
+    assert pattern.search("x == y")
+    
+    # Should NOT match
+    assert not pattern.search("if (x === 5)")
+    assert not pattern.search("x !== y")
+    assert not pattern.search("x = 5")  # assignment
+
+
+def test_javascript_console_log():
+    """Test console.log detection."""
+    rules = get_rules_for_language("javascript")
+    pattern = next(r for r in rules if r[3] == "console-log")[0]
+    
+    # Should match
+    assert pattern.search("console.log('debug');")
+    assert pattern.search("console.log(value)")
+
+
+def test_javascript_eval():
+    """Test eval() detection."""
+    rules = get_rules_for_language("javascript")
+    pattern = next(r for r in rules if r[3] == "eval-usage")[0]
+    
+    # Should match
+    assert pattern.search("eval(userInput)")
+    assert pattern.search("result = eval('1 + 1')")
+
+
+def test_javascript_innerhtml():
+    """Test innerHTML assignment detection."""
+    rules = get_rules_for_language("javascript")
+    pattern = next(r for r in rules if r[3] == "innerhtml")[0]
+    
+    # Should match
+    assert pattern.search("element.innerHTML = html")
+    assert pattern.search("div.innerHTML = '<div>test</div>'")
+
+
+def test_javascript_insert_adjacent_html():
+    """Test insertAdjacentHTML detection."""
+    rules = get_rules_for_language("javascript")
+    pattern = next(r for r in rules if r[3] == "insert-adjacent-html")[0]
+    
+    # Should match
+    assert pattern.search("element.insertAdjacentHTML('beforeend', html)")
+
+
+def test_javascript_document_write():
+    """Test document.write detection."""
+    rules = get_rules_for_language("javascript")
+    pattern = next(r for r in rules if r[3] == "document-write")[0]
+    
+    # Should match
+    assert pattern.search("document.write('<div>test</div>')")
+    assert pattern.search("document.write(content)")
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# GO RULES
+# ───────────────────────────────────────────────────────────────────────────
+
+def test_go_unchecked_error():
+    """Test unchecked error detection."""
+    rules = get_rules_for_language("go")
+    pattern = next(r for r in rules if r[3] == "unchecked-error")[0]
+    
+    # Should match (pattern requires := for declaration assignment)
+    # Pattern: ^\s*\w+(?:,\s*_)\s*[:=]= matches := but not single =
+    assert pattern.match("result, _ := operation()")
+    assert pattern.match("    value, _ := getValue()")  # With leading whitespace
+
+
+def test_go_fmt_print():
+    """Test fmt.Print detection."""
+    rules = get_rules_for_language("go")
+    pattern = next(r for r in rules if r[3] == "fmt-print")[0]
+    
+    # Should match
+    assert pattern.search("fmt.Println(value)")
+    assert pattern.search("fmt.Print(x)")
+    assert pattern.search("fmt.Printf('value: %d', x)")
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# RUST RULES
+# ───────────────────────────────────────────────────────────────────────────
+
+def test_rust_unwrap():
+    """Test .unwrap() detection."""
+    rules = get_rules_for_language("rust")
+    pattern = next(r for r in rules if r[3] == "unwrap")[0]
+    
+    # Should match
+    assert pattern.search("let value = option.unwrap();")
+    assert pattern.search("result.unwrap()")
+
+
+def test_rust_expect():
+    """Test .expect() detection."""
+    rules = get_rules_for_language("rust")
+    pattern = next(r for r in rules if r[3] == "expect-panic")[0]
+    
+    # Should match
+    assert pattern.search("result.expect('failed')")
+    assert pattern.search("value.expect(\"error message\")")
+
+
+def test_rust_unsafe_block():
+    """Test unsafe block detection."""
+    rules = get_rules_for_language("rust")
+    pattern = next(r for r in rules if r[3] == "unsafe-block")[0]
+    
+    # Should match
+    assert pattern.search("unsafe { operation() }")
+    assert pattern.search("unsafe {")
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# SECURITY RULES
+# ───────────────────────────────────────────────────────────────────────────
+
+def test_security_path_traversal():
+    """Test path traversal detection."""
+    rules = get_rules_for_language("python")
+    pattern = next(r for r in rules if r[3] == "path-traversal")[0]
+    
+    # Should match
+    assert pattern.search("open('../../../etc/passwd')")
+    assert pattern.search("read('../../config.ini')")
+
+
+def test_security_private_key():
+    """Test private key detection."""
+    rules = get_rules_for_language("python")
+    pattern = next(r for r in rules if r[3] == "private-key")[0]
+    
+    # Should match
+    assert pattern.search("-----BEGIN PRIVATE KEY-----")
+    assert pattern.search("-----BEGIN RSA PRIVATE KEY-----")
+    assert pattern.search("-----BEGIN EC PRIVATE KEY-----")
