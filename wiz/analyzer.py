@@ -341,6 +341,47 @@ def filter_report(
     return report
 
 
+def diff_reports(
+    report: ScanReport,
+    baseline_dict: dict,
+) -> ScanReport:
+    """Filter report to show only NEW findings not in baseline.
+    
+    Uses 5-line bucket matching: findings on similar lines (±5) with the same
+    rule are considered the same issue.
+    
+    Args:
+        report: Current scan report
+        baseline_dict: Baseline report as dict (from load_baseline_report)
+    
+    Returns:
+        Modified report containing only new findings
+    """
+    # Build set of baseline finding signatures: (file, line_bucket, rule)
+    baseline_signatures = set()
+    for file_data in baseline_dict.get("files", []):
+        file_path = file_data.get("path", "")
+        for finding in file_data.get("findings", []):
+            line = finding.get("line", 0)
+            rule = finding.get("rule", "")
+            bucket = line // 5
+            baseline_signatures.add((file_path, bucket, rule))
+    
+    # Filter out findings that exist in baseline
+    for fa in report.file_analyses:
+        fa.findings = [
+            f for f in fa.findings
+            if (fa.path, f.line // 5, f.rule) not in baseline_signatures
+        ]
+    
+    # Recompute counts
+    report.total_findings = sum(len(fa.findings) for fa in report.file_analyses)
+    report.critical = sum(fa.critical_count for fa in report.file_analyses)
+    report.warnings = sum(fa.warning_count for fa in report.file_analyses)
+    report.info = sum(fa.info_count for fa in report.file_analyses)
+    return report
+
+
 def cost_estimate(
     root: Path,
     language_filter: Optional[str] = None,

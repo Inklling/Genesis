@@ -14,6 +14,7 @@ def ensure_dirs():
     """Create storage directories if they don't exist."""
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def file_hash(filepath: str) -> str:
@@ -86,6 +87,29 @@ def load_latest_report() -> Optional[dict]:
         except (json.JSONDecodeError, OSError):
             return None
     return None
+
+
+def load_baseline_report(baseline: str) -> Optional[dict]:
+    """Load a baseline report for comparison.
+    
+    Args:
+        baseline: Either "latest" or a path to a specific report file
+    
+    Returns:
+        Baseline report dict or None if not found/invalid
+    """
+    if baseline == "latest":
+        return load_latest_report()
+    
+    # Try to load from specific path
+    baseline_path = Path(baseline)
+    if not baseline_path.exists():
+        return None
+    
+    try:
+        return json.loads(baseline_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
 
 
 def list_reports() -> list[Path]:
