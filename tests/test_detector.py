@@ -569,3 +569,39 @@ var y = 10;
     assert len(eval_findings) == 0  # eval is inside block comment
     var_findings = [f for f in findings if f.rule == "var-usage"]
     assert len(var_findings) == 1  # only the var y outside comment
+
+
+def test_regression_python_triple_quote_string_assignment():
+    """Regression: Triple-quote in string assignment should NOT enter block comment mode."""
+    # The key point: when """ appears mid-line (not at start), it should NOT
+    # trigger block comment mode, so the line after it should still be scanned.
+    code = '''
+api_key = "sk_test_first_12345"
+my_var = """some text"""
+api_token = "sk_test_after_12345"
+'''
+    findings = run_regex_checks(code, "test.py", "python")
+    secret_findings = [f for f in findings if f.rule == "hardcoded-secret"]
+    # Should detect both secrets (line 2 and line 4), proving line 3 didn't
+    # enter block comment mode and cause line 4 to be skipped
+    assert len(secret_findings) == 2
+    lines_with_secrets = {f.line for f in secret_findings}
+    assert 2 in lines_with_secrets  # api_key line
+    assert 4 in lines_with_secrets  # api_token line (proves line 3 didn't trigger block mode)
+
+
+def test_regression_python_docstring_is_block_comment():
+    """Regression: Actual docstrings (triple-quote at line start) SHOULD be treated as block comments."""
+    code = '''
+def my_function():
+    """
+    This is a docstring.
+    api_key = "sk_test_should_be_skipped"
+    """
+    api_key = "sk_test_realvalue_12345"
+'''
+    findings = run_regex_checks(code, "test.py", "python")
+    secret_findings = [f for f in findings if f.rule == "hardcoded-secret"]
+    # Should only detect the api_key on line 7, not the one inside docstring on line 5
+    assert len(secret_findings) == 1
+    assert secret_findings[0].line == 7

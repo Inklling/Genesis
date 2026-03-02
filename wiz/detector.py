@@ -73,19 +73,36 @@ def run_regex_checks(content: str, filepath: str, language: str) -> list[Finding
 
         # Track block comments (/* */ style and """ """ style)
         if block_open and not in_block_comment:
-            if block_open in stripped:
+            # For Python: only treat """ as block comment start if at line start
+            # (docstring position, not mid-line string assignment)
+            # For other languages: any /* is a comment
+            block_start_match = False
+            if language == "python":
+                block_start_match = stripped.startswith(block_open)
+            else:
+                block_start_match = block_open in stripped
+            
+            if block_start_match:
                 # Check if block opens and closes on same line
                 idx = stripped.index(block_open)
                 rest = stripped[idx + len(block_open):]
                 if block_close not in rest:
                     in_block_comment = True
                     continue
-            elif alt_block_open and alt_block_open in stripped:
-                idx = stripped.index(alt_block_open)
-                rest = stripped[idx + len(alt_block_open):]
-                if alt_block_close not in rest:
-                    in_block_comment = True
-                    continue
+            elif alt_block_open:
+                # For Python ''' - same logic
+                alt_start_match = False
+                if language == "python":
+                    alt_start_match = stripped.startswith(alt_block_open)
+                else:
+                    alt_start_match = alt_block_open in stripped
+                
+                if alt_start_match:
+                    idx = stripped.index(alt_block_open)
+                    rest = stripped[idx + len(alt_block_open):]
+                    if alt_block_close not in rest:
+                        in_block_comment = True
+                        continue
         elif in_block_comment:
             if block_close and block_close in stripped:
                 in_block_comment = False
