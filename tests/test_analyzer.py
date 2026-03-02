@@ -8,6 +8,7 @@ from wiz.analyzer import (
     should_skip_file,
     collect_files,
     filter_report,
+    diff_reports,
 )
 from wiz.config import Severity, Finding, Category, Source
 
@@ -220,3 +221,185 @@ def test_filter_report_updates_counts(sample_scan_report):
     assert filtered.critical == 1
     assert filtered.warnings == 1
     assert filtered.info == 0
+
+
+def test_diff_reports_removes_known_findings(sample_scan_report):
+    """Test that diff_reports filters out findings in baseline."""
+    from wiz.config import FileAnalysis
+    
+    # Current report has 3 findings
+    current_findings = [
+        Finding("test.py", 10, Severity.WARNING, Category.BUG, Source.STATIC, "rule1", "msg1"),
+        Finding("test.py", 25, Severity.INFO, Category.STYLE, Source.STATIC, "rule2", "msg2"),
+        Finding("test.py", 50, Severity.CRITICAL, Category.SECURITY, Source.STATIC, "rule3", "msg3"),
+    ]
+    fa = FileAnalysis("test.py", "python", 100, current_findings)
+    sample_scan_report.file_analyses = [fa]
+    sample_scan_report.total_findings = 3
+    sample_scan_report.critical = 1
+    sample_scan_report.warnings = 1
+    sample_scan_report.info = 1
+    
+    # Baseline has 2 of these findings (line 10 and 50)
+    baseline_dict = {
+        "files": [
+            {
+                "path": "test.py",
+                "findings": [
+                    {"line": 10, "rule": "rule1"},  # Same bucket as line 10 (10//5 = 2)
+                    {"line": 51, "rule": "rule3"},  # Same bucket as line 50 (50//5 = 10, 51//5 = 10)
+                ]
+            }
+        ]
+    }
+    
+    # Apply diff
+    diffed = diff_reports(sample_scan_report, baseline_dict)
+    
+    # Should only have the finding at line 25 (rule2)
+    all_findings = []
+    for fa in diffed.file_analyses:
+        all_findings.extend(fa.findings)
+    
+    assert len(all_findings) == 1
+    assert all_findings[0].rule == "rule2"
+    assert all_findings[0].line == 25
+
+
+def test_diff_reports_preserves_new_findings(sample_scan_report):
+    """Test that diff_reports preserves findings not in baseline."""
+    from wiz.config import FileAnalysis
+    
+    # Current report has findings
+    current_findings = [
+        Finding("test.py", 15, Severity.WARNING, Category.BUG, Source.STATIC, "new_rule", "new issue"),
+        Finding("other.py", 20, Severity.INFO, Category.STYLE, Source.STATIC, "style_rule", "style"),
+    ]
+    fa1 = FileAnalysis("test.py", "python", 100, [current_findings[0]])
+    fa2 = FileAnalysis("other.py", "python", 50, [current_findings[1]])
+    sample_scan_report.file_analyses = [fa1, fa2]
+    sample_scan_report.total_findings = 2
+    
+    # Baseline has different findings (different file or rule)
+    baseline_dict = {
+        "files": [
+            {
+                "path": "test.py",
+                "findings": [
+                    {"line": 10, "rule": "old_rule"},  # Different rule
+                ]
+            }
+        ]
+    }
+    
+    # Apply diff
+    diffed = diff_reports(sample_scan_report, baseline_dict)
+    
+    # Should preserve both findings (different from baseline)
+    all_findings = []
+    for fa in diffed.file_analyses:
+        all_findings.extend(fa.findings)
+    
+    assert len(all_findings) == 2
+    rules = {f.rule for f in all_findings}
+    assert "new_rule" in rules
+    assert "style_rule" in rules
+
+
+def test_diff_reports_uses_bucket_matching(sample_scan_report):
+    """Test that diff_reports uses 5-line bucket matching."""
+    from wiz.config import FileAnalysis
+    
+    # Current finding at line 12
+    current_findings = [
+        Finding("test.py", 12, Severity.WARNING, Category.BUG, Source.STATIC, "rule1", "msg"),
+    ]
+    fa = FileAnalysis("test.py", "python", 100, current_findings)
+    sample_scan_report.file_analyses = [fa]
+    sample_scan_report.total_findings = 1
+    
+    # Baseline has same rule at line 14 (both in bucket 2: 12//5=2, 14//5=2)
+    baseline_dict = {
+        "files": [
+            {
+                "path": "test.py",
+                "findings": [
+                    {"line": 14, "rule": "rule1"},  # Within 5-line bucket
+                ]
+            }
+        ]
+    }
+    
+    # Apply diff - should filter out the finding (same bucket + rule)
+    diffed = diff_reports(sample_scan_report, baseline_dict)
+    
+    all_findings = []
+    for fa in diffed.file_analyses:
+        all_findings.extend(fa.findings)
+    
+    assert len(all_findings) == 0  # Filtered out
+
+
+def test_diff_reports_empty_baseline(sample_scan_report):
+    """Test diff_reports with empty baseline (all findings are new)."""
+    from wiz.config import FileAnalysis
+    
+    current_findings = [
+        Finding("test.py", 10, Severity.WARNING, Category.BUG, Source.STATIC, "rule1", "msg1"),
+        Finding("test.py", 20, Severity.INFO, Category.STYLE, Source.STATIC, "rule2", "msg2"),
+    ]
+    fa = FileAnalysis("test.py", "python", 100, current_findings)
+    sample_scan_report.file_analyses = [fa]
+    sample_scan_report.total_findings = 2
+    
+    # Empty baseline
+    baseline_dict = {"files": []}
+    
+    # Apply diff
+    diffed = diff_reports(sample_scan_report, baseline_dict)
+    
+    # Should preserve all findings
+    all_findings = []
+    for fa in diffed.file_analyses:
+        all_findings.extend(fa.findings)
+    
+    assert len(all_findings) == 2
+
+
+def test_diff_reports_updates_counts(sample_scan_report):
+    """Test that diff_reports updates totals correctly."""
+    from wiz.config import FileAnalysis
+    
+    current_findings = [
+        Finding("test.py", 10, Severity.CRITICAL, Category.BUG, Source.STATIC, "r1", "msg1"),
+        Finding("test.py", 20, Severity.WARNING, Category.BUG, Source.STATIC, "r2", "msg2"),
+        Finding("test.py", 30, Severity.INFO, Category.STYLE, Source.STATIC, "r3", "msg3"),
+    ]
+    fa = FileAnalysis("test.py", "python", 100, current_findings)
+    sample_scan_report.file_analyses = [fa]
+    sample_scan_report.total_findings = 3
+    sample_scan_report.critical = 1
+    sample_scan_report.warnings = 1
+    sample_scan_report.info = 1
+    
+    # Baseline has the critical and info findings
+    baseline_dict = {
+        "files": [
+            {
+                "path": "test.py",
+                "findings": [
+                    {"line": 10, "rule": "r1"},  # Critical
+                    {"line": 30, "rule": "r3"},  # Info
+                ]
+            }
+        ]
+    }
+    
+    # Apply diff
+    diffed = diff_reports(sample_scan_report, baseline_dict)
+    
+    # Should only have the warning
+    assert diffed.total_findings == 1
+    assert diffed.critical == 0
+    assert diffed.warnings == 1
+    assert diffed.info == 0

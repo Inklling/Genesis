@@ -9,6 +9,7 @@ from wiz.storage import (
     save_cache,
     save_report,
     load_latest_report,
+    load_baseline_report,
     list_reports,
     ensure_dirs,
 )
@@ -287,6 +288,90 @@ def test_ensure_dirs(temp_dir):
     # Restore
     storage.REPORTS_DIR = original_reports
     storage.STORAGE_DIR = original_storage
+
+
+def test_load_baseline_report_latest(sample_scan_report, temp_dir):
+    """Test loading baseline report using 'latest' keyword."""
+    from wiz import storage
+    
+    original_reports = storage.REPORTS_DIR
+    original_storage = storage.STORAGE_DIR
+    
+    storage.STORAGE_DIR = temp_dir
+    storage.REPORTS_DIR = temp_dir / "reports"
+    
+    # Save a report to become latest
+    save_report(sample_scan_report)
+    
+    # Load it via baseline with "latest"
+    baseline = load_baseline_report("latest")
+    
+    assert baseline is not None
+    assert baseline["root"] == sample_scan_report.root
+    assert baseline["mode"] == sample_scan_report.mode
+    
+    # Restore
+    storage.REPORTS_DIR = original_reports
+    storage.STORAGE_DIR = original_storage
+
+
+def test_load_baseline_report_specific_path(sample_scan_report, temp_dir):
+    """Test loading baseline report from specific file path."""
+    from wiz import storage
+    
+    original_reports = storage.REPORTS_DIR
+    original_storage = storage.STORAGE_DIR
+    
+    storage.STORAGE_DIR = temp_dir
+    storage.REPORTS_DIR = temp_dir / "reports"
+    
+    # Save a report
+    report_path = save_report(sample_scan_report)
+    
+    # Load it via specific path
+    baseline = load_baseline_report(str(report_path))
+    
+    assert baseline is not None
+    assert baseline["root"] == sample_scan_report.root
+    assert baseline["mode"] == sample_scan_report.mode
+    
+    # Restore
+    storage.REPORTS_DIR = original_reports
+    storage.STORAGE_DIR = original_storage
+
+
+def test_load_baseline_report_invalid_path():
+    """Test that load_baseline_report returns None for invalid path."""
+    baseline = load_baseline_report("/nonexistent/path/to/report.json")
+    assert baseline is None
+
+
+def test_load_baseline_report_malformed_json(temp_dir):
+    """Test that load_baseline_report handles malformed JSON gracefully."""
+    # Create a file with invalid JSON
+    bad_report = temp_dir / "bad_report.json"
+    bad_report.write_text("{ invalid json }")
+    
+    baseline = load_baseline_report(str(bad_report))
+    assert baseline is None
+
+
+def test_load_baseline_report_latest_nonexistent():
+    """Test load_baseline_report with 'latest' when no reports exist."""
+    from wiz import storage
+    import tempfile
+    
+    original_reports = storage.REPORTS_DIR
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        storage.REPORTS_DIR = Path(tmpdir) / "reports"
+        storage.REPORTS_DIR.mkdir()
+        
+        # No reports exist
+        baseline = load_baseline_report("latest")
+        assert baseline is None
+        
+        storage.REPORTS_DIR = original_reports
 
 
 # NOTE: The handoff notes mention dead functions in storage.py (lines 49-58):
