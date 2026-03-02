@@ -8,7 +8,7 @@ from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .config import (
-    Finding, FileAnalysis, ScanReport, Severity, Confidence,
+    Finding, FileAnalysis, ScanReport, Severity, Confidence, Category, Source,
     LANGUAGE_EXTENSIONS, SKIP_DIRS, SKIP_FILES, MAX_FILE_SIZE,
     load_ignore_patterns,
 )
@@ -219,21 +219,69 @@ def scan_quick(
 def scan_deep(
     root: Path,
     language_filter: Optional[str] = None,
+    use_cache: bool = True,
 ) -> ScanReport:
     """Deep scan — static + Claude API analysis.
 
     Runs static analysis first and saves intermediate results,
     then enriches with LLM. If LLM fails partway through, static
     findings are still preserved.
+    
+    Args:
+        root: Path to scan
+        language_filter: Optional language to filter by
+        use_cache: Whether to use file hash cache (skips LLM for unchanged files)
     """
     files, skipped = collect_files(root, language_filter)
     cost_tracker = CostTracker()
+    cache = load_cache() if use_cache else {}
 
-    # Phase 1: Static analysis for all files (always succeeds)
-    file_data = []  # list of (fp_str, lang, content, line_count, static_findings, fhash)
+    # Phase 1: Static analysis and cache check
+    file_data = []  # list of (fp_str, lang, content, line_count, static_findings, fhash, from_cache)
+    cached_analyses = []  # FileAnalyses loaded from cache
+    
     for filepath in files:
         fp_str = str(filepath)
         lang = detect_language(filepath)
+        
+        # Compute hash first
+        try:
+            fhash = file_hash(fp_str)
+        except OSError:
+            skipped += 1
+            continue
+        
+        # Check cache - if file unchanged, skip LLM analysis
+        if use_cache and fp_str in cache and isinstance(cache[fp_str], dict):
+            cached_data = cache[fp_str]
+            if cached_data.get("hash") == fhash:
+                # Cache hit - reconstruct FileAnalysis from cached data
+                cached_findings = [
+                    Finding(
+                        file=f["file"],
+                        line=f["line"],
+                        severity=Severity(f["severity"]),
+                        category=Category(f["category"]),
+                        source=Source(f["source"]),
+                        rule=f["rule"],
+                        message=f["message"],
+                        suggestion=f.get("suggestion"),
+                        snippet=f.get("snippet"),
+                        confidence=Confidence(f["confidence"]) if f.get("confidence") else None,
+                    )
+                    for f in cached_data.get("findings", [])
+                ]
+                fa = FileAnalysis(
+                    path=fp_str,
+                    language=cached_data.get("language", lang),
+                    lines=cached_data.get("lines", 0),
+                    findings=cached_findings,
+                    file_hash=fhash,
+                )
+                cached_analyses.append(fa)
+                continue
+        
+        # Cache miss or disabled - need to analyze
         try:
             content = filepath.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -241,11 +289,10 @@ def scan_deep(
             continue
         line_count = content.count("\n") + 1
         static_findings = analyze_file_static(fp_str, content, lang)
-        fhash = file_hash(fp_str)
         file_data.append((fp_str, lang, content, line_count, static_findings, fhash))
 
     # Phase 2: LLM enrichment (may fail partway)
-    analyses = []
+    analyses = cached_analyses.copy()  # Start with cached results
     for i, (fp_str, lang, content, line_count, static_findings, fhash) in enumerate(file_data):
         print(f"  [{i+1}/{len(file_data)}] {fp_str} ({lang}, {line_count} lines)", flush=True)
 
@@ -274,12 +321,25 @@ def scan_deep(
             file_hash=fhash,
         )
         analyses.append(fa)
+        
+        # Cache the analysis for this file
+        if use_cache:
+            cache[fp_str] = {
+                "hash": fhash,
+                "language": lang,
+                "lines": line_count,
+                "findings": [f.to_dict() for f in merged],
+            }
 
     total_findings = sum(len(fa.findings) for fa in analyses)
     critical = sum(fa.critical_count for fa in analyses)
     warnings = sum(fa.warning_count for fa in analyses)
     info = sum(fa.info_count for fa in analyses)
 
+    # Save cache with updated analyses
+    if use_cache:
+        save_cache(cache)
+    
     report_obj = ScanReport(
         root=str(root),
         mode="deep",

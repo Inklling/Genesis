@@ -41,7 +41,7 @@ def cmd_scan(args):
             if not is_json:
                 print(f"Deep scanning {root} ...\n")
             try:
-                report_obj = scan_deep(root, language_filter=lang)
+                report_obj = scan_deep(root, language_filter=lang, use_cache=use_cache)
             except Exception as e:
                 print(f"Error: {e}", file=sys.stderr)
                 return 1
