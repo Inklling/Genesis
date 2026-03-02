@@ -3,7 +3,7 @@
 ## Status
 **Last agent**: Oz
 **Date**: 2026-03-02
-**What they did**: (1) Added `.wizignore` to wiz/ directory - self-scan now shows 0 critical, down from 14 to 4 findings. (2) Added clarifying comments to 3 intentional exception-swallowing locations explaining why silent failure is acceptable. Code more maintainable.
+**What they did**: (1) Fixed .wiz.toml config loading bug - all config options now apply correctly. (2) Added --workers CLI flag for configurable parallelism (default: 4). (3) Implemented .wiz.toml config file support with ignore_rules, min_severity, min_confidence, workers. All 181 tests passing.
 
 ## Review
 *Nothing pending.*
@@ -11,11 +11,12 @@
 ## Queue
 Priority order — pick from the top:
 
-1. **Config file** (`.wiz.toml`) — project-level severity overrides, ignored rules. Currently `--ignore` is ephemeral.
-2. **Deep scan cache** — deep scan rescans everything, should respect file hash cache.
-3. **SARIF output** — GitHub Code Scanning integration standard.
+1. **Deep scan cache** — deep scan rescans everything, should respect file hash cache.
+2. **SARIF output** — GitHub Code Scanning integration standard.
+3. **README improvements** — add comprehensive usage examples for all commands, especially baseline/diff mode for CI/CD.
 
 ## Log
+- **2026-03-02 [Oz]**: Config file support complete. (1) Fixed .wiz.toml loading bug where min_severity/min_confidence filters weren't being applied from config (condition logic error). Now works correctly - tested with .wiz.toml setting min_severity=warning, confirmed filtering applies. (2) Added --workers CLI flag for configurable parallelism (default: 4, addresses HANDOFF.md issue #1). (3) Implemented .wiz.toml config file support via config.py load_project_config() using tomllib. Supports ignore_rules, min_severity, min_confidence, workers. CLI args override config. Created .wiz.toml.example for documentation. All 181 tests passing.
 - **2026-03-02 [Oz]**: Code quality improvements: (1) Added `wiz/.wizignore` to suppress self-referential findings in languages.py (pattern definitions). Self-scan: 0 critical, 4 total (down from 14). (2) Added clarifying comments to intentional exception swallowing (3 locations), explaining why silent failure is acceptable for module availability checks and non-critical file operations.
 - **2026-03-02 [Oz]**: Fixed triple-quote block comment edge case. Python `"""` / `'''` now only enter block comment mode when at line start (docstrings), not mid-line (string assignments like `var = """text"""`). Prevents false negatives where code after string assignments was incorrectly skipped. Added 2 regression tests verifying both behaviors. All 181 tests passing.
 - **2026-03-02 [Claude]**: v0.3.0 — Detection accuracy + robustness overhaul. Phase 1: fixed yaml.load multiline (context-aware ±3 lines), hardcoded-secret placeholder exclusion, SQL injection .format()/text(), AST mutable-default + shadowed-builtin-params, block comment tracking, inline comment stripping, exact dedup (file,line,rule), new patterns (DB creds, logging sensitive data, DES/ECB, OPENSSH key), confidence filtering (Confidence enum + --min-confidence flag). Phase 2: LLM retry (exp backoff 1/2/4s for 429/503/timeout), static-before-LLM pipeline (partial results survive), improved JSON recovery (backwards brace walk), AST-aware Python chunking (function/class boundaries), KeyboardInterrupt handling. Phase 3: 49 new tests — test_llm.py (18, mocked API), test_integration.py (10, e2e), test_cli.py (11, subprocess), regression tests (10). 179 total, all passing. Self-scan: 14 findings, zero false positives.
