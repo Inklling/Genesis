@@ -1,0 +1,3 @@
+# Suppress self-referential findings in languages.py
+# These are pattern definitions, not actual issues
+languages.py
