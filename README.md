@@ -51,11 +51,17 @@ python -m wiz scan . --deep
 python -m wiz scan <path>              # Quick scan
 python -m wiz scan <path> --deep       # Deep scan with LLM
 python -m wiz scan <path> --no-cache   # Disable file caching
+python -m wiz scan <path> --workers 8  # Control parallelism (default: 4)
 
 # Filter results
 python -m wiz scan . --ignore todo-marker,console-log
 python -m wiz scan . --min-severity warning
+python -m wiz scan . --min-confidence medium
 python -m wiz scan . --output json
+
+# Baseline/diff mode (CI/CD)
+python -m wiz scan . --baseline latest           # Compare against latest report
+python -m wiz scan . --baseline path/to/baseline.json  # Compare against specific report
 
 # Debug specific file
 python -m wiz debug <file>
@@ -71,6 +77,22 @@ python -m wiz setup                    # Check environment
 ```
 
 ## Configuration
+
+### .wiz.toml
+
+Create a `.wiz.toml` file in your project root for persistent project-level settings:
+
+```toml
+# Filter settings
+ignore_rules = ["todo-marker", "console-log"]
+min_severity = "warning"      # low, medium, high, critical
+min_confidence = "medium"     # low, medium, high
+
+# Performance
+workers = 8                   # Parallel scanning workers (default: 4)
+```
+
+CLI arguments override config file settings.
 
 ### .wizignore
 
@@ -110,6 +132,68 @@ node_modules/
 - Dead/unreachable code
 - TODO/FIXME markers
 - Long lines (>200 chars)
+
+## CI/CD Integration
+
+Baseline/diff mode is essential for CI/CD pipelines - it shows only new findings compared to a baseline, preventing noise from pre-existing issues.
+
+### GitHub Actions Example
+
+```yaml
+name: Security Scan
+
+on: [pull_request]
+
+jobs:
+  wiz-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install Wiz
+        run: |
+          pip install -r requirements.txt
+      
+      - name: Run security scan
+        run: |
+          python -m wiz scan . --baseline latest --min-severity warning --output json > results.json
+      
+      - name: Check for new issues
+        run: |
+          # Fail if any new critical/high severity issues found
+          if [ $(jq '.summary.critical + .summary.high' results.json) -gt 0 ]; then
+            echo "New security issues detected!"
+            exit 1
+          fi
+```
+
+### How Baseline/Diff Works
+
+1. **First scan**: Creates baseline report in `~/.wiz/reports/`
+2. **Subsequent scans**: Use `--baseline latest` to compare against most recent report
+3. **Matching**: Uses 5-line bucket signatures (file, line_bucket, rule) to identify findings - tolerates minor line shifts without losing track
+4. **Result**: Only shows findings not present in baseline
+
+### Local Development Workflow
+
+```bash
+# 1. Establish baseline on main branch
+git checkout main
+python -m wiz scan .
+
+# 2. Switch to feature branch
+git checkout feature-branch
+
+# 3. Scan for new issues only
+python -m wiz scan . --baseline latest
+
+# Only new findings introduced in feature-branch are shown
+```
 
 ## Output Examples
 
@@ -183,26 +267,35 @@ Genesis/
 
 ## Version History
 
-### v0.2.0 (Current)
-- ✅ Comprehensive test suite (120 tests)
-- ✅ Fixed yaml-unsafe regex bug
-- ✅ Refactored AST checks for maintainability
-- ✅ Added parallel scanning (3-4x speedup)
-- ✅ Removed dead code
-- False positive reduction
-- Deeper Python AST analysis
+### v0.3.0 (Current)
+- ✅ Baseline/diff mode for CI/CD (`--baseline` flag)
+- ✅ Config file support (`.wiz.toml`)
+- ✅ Configurable parallelism (`--workers` flag)
+- ✅ Confidence filtering (`--min-confidence` flag)
+- ✅ Block comment support (Python, JS, Go, etc.)
+- ✅ 181 comprehensive tests (up from 120)
+- ✅ Detection accuracy improvements
+- ✅ LLM retry logic with exponential backoff
+- ✅ Static-before-LLM pipeline (partial results survive)
+- ✅ Improved JSON recovery and error handling
+- ✅ .wizignore support for self-referential findings
+
+### v0.2.0
+- Comprehensive test suite (120 tests)
+- Fixed yaml-unsafe regex bug
+- Refactored AST checks for maintainability
+- Added parallel scanning (3-4x speedup)
 - CLI improvements (--ignore, --min-severity, --output json)
 - .wizignore support
 - Auto-prune old reports (keep 50 max)
 
 ## Roadmap
 
-- [ ] Baseline/diff mode (show only new findings)
-- [ ] Config file (.wiz.toml)
-- [ ] Deep scan caching
-- [ ] Block comment support
-- [ ] SARIF output (GitHub Code Scanning)
+- [ ] Deep scan caching (respect file hash cache)
+- [ ] SARIF output (GitHub Code Scanning integration)
 - [ ] Parallel deep scanning
+- [ ] Custom rule definitions
+- [ ] VSCode extension
 
 ## License
 
