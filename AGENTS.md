@@ -1,11 +1,7 @@
-# Genesis Agent Skill — COLLAB.md Auto-Check
+# Genesis Project Rules
 
-Use this skill at the start of every task.
-
-## Instructions
-
-Before doing anything else, read `COLLAB.md` and check:
-
+## COLLAB.md Auto-Check
+At the start of every task, read `COLLAB.md` and check:
 1. **Status** — Who worked last and what they did
 2. **Review** — Is there a review request addressed to you? If so, handle it first.
 3. **Queue** — What's the next priority item?
