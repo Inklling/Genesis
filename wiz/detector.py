@@ -37,10 +37,25 @@ def _strip_inline_comment(line: str, language: str) -> str:
     return line
 
 
-def run_regex_checks(content: str, filepath: str, language: str) -> list[Finding]:
-    """Run regex-based pattern matching against file content."""
+def run_regex_checks(content: str, filepath: str, language: str,
+                     custom_rules=None) -> list[Finding]:
+    """Run regex-based pattern matching against file content.
+
+    Args:
+        custom_rules: Optional list of compiled custom rules from compile_custom_rules().
+            Each tuple: (re.Pattern, Severity, Category, name, message, suggestion, languages).
+            Rules with languages=None apply to all languages; otherwise only to listed ones.
+    """
     findings = []
     rules = get_rules_for_language(language)
+
+    # Collect applicable custom rules (processed separately — match full line)
+    applicable_custom_rules = []
+    if custom_rules:
+        for pattern, severity, category, name, message, suggestion, languages in custom_rules:
+            if languages is None or language in languages:
+                applicable_custom_rules.append((pattern, severity, category, name, message, suggestion))
+
     lines = content.splitlines()
 
     # Language-aware comment prefixes for full-line detection
@@ -141,6 +156,21 @@ def run_regex_checks(content: str, filepath: str, language: str) -> list[Finding
                     if "SafeLoader" in context or "safe_load" in context:
                         continue
 
+                findings.append(Finding(
+                    file=filepath,
+                    line=line_num,
+                    severity=severity,
+                    category=category,
+                    source=Source.STATIC,
+                    rule=rule_name,
+                    message=message,
+                    suggestion=suggestion,
+                    snippet=stripped[:120],
+                ))
+
+        # Custom rules: match against the full line (no comment stripping)
+        for pattern, severity, category, rule_name, message, suggestion in applicable_custom_rules:
+            if pattern.search(line):
                 findings.append(Finding(
                     file=filepath,
                     line=line_num,
@@ -451,9 +481,10 @@ def _check_function(node: ast.FunctionDef, filepath: str, findings: list[Finding
         ))
 
 
-def analyze_file_static(filepath: str, content: str, language: str) -> list[Finding]:
+def analyze_file_static(filepath: str, content: str, language: str,
+                        custom_rules=None) -> list[Finding]:
     """Run all static checks (regex + AST if Python)."""
-    findings = run_regex_checks(content, filepath, language)
+    findings = run_regex_checks(content, filepath, language, custom_rules=custom_rules)
 
     if language == "python":
         findings.extend(run_python_ast_checks(content, filepath))

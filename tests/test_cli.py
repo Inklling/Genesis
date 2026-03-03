@@ -152,3 +152,45 @@ def test_cli_scan_deep_no_api_key(temp_dir):
     rc, out, err = _run_wiz("scan", str(temp_dir), "--deep", "--no-cache")
     # Should fail with LLM error (no API key)
     assert rc in (0, 1, 2)  # May succeed with static findings or fail
+
+
+# ─── Analyze command tests ───────────────────────────────────────────
+
+def test_cli_analyze_no_llm(temp_dir):
+    """Test analyze --no-llm on a temp dir with 2 files."""
+    (temp_dir / "main.py").write_text("import helper\nhelper.do_thing()\n")
+    (temp_dir / "helper.py").write_text("def do_thing():\n    return 42\n")
+    rc, out, err = _run_wiz("analyze", str(temp_dir), "--no-llm")
+    assert rc == 0
+    assert "Dependency Graph" in out
+    assert "Files:" in out
+
+
+def test_cli_analyze_json_no_llm(temp_dir):
+    """Test analyze --output json --no-llm produces valid JSON with graph_metrics."""
+    (temp_dir / "a.py").write_text("import b\n")
+    (temp_dir / "b.py").write_text("x = 1\n")
+    rc, out, err = _run_wiz("analyze", str(temp_dir), "--no-llm", "--output", "json")
+    assert rc == 0
+    data = json.loads(out)
+    assert "graph_metrics" in data
+    assert "dependency_graph" in data
+    assert data["files_analyzed"] == 2
+
+
+def test_cli_analyze_not_directory(temp_dir):
+    """Test analyze on a file (not directory) gives error."""
+    f = temp_dir / "test.py"
+    f.write_text("x = 1\n")
+    rc, out, err = _run_wiz("analyze", str(f))
+    assert rc == 1
+    assert "not a directory" in err.lower() or "not a directory" in out.lower()
+
+
+def test_cli_analyze_help():
+    """Test analyze --help shows expected options."""
+    rc, out, err = _run_wiz("analyze", "--help")
+    assert rc == 0
+    assert "--depth" in out
+    assert "--no-llm" in out
+    assert "--output" in out

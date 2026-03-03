@@ -1,0 +1,71 @@
+{
+  "name": "wiz-code-analyzer",
+  "displayName": "Wiz Code Analyzer",
+  "description": "Static analysis with inline diagnostics and one-click fixes powered by Wiz",
+  "version": "0.1.0",
+  "publisher": "wiz",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Linters",
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:python",
+    "onLanguage:javascript",
+    "onLanguage:typescript",
+    "onLanguage:typescriptreact",
+    "onLanguage:javascriptreact",
+    "onLanguage:go",
+    "onLanguage:rust"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "wiz.scanFile",
+        "title": "Wiz: Scan Current File"
+      },
+      {
+        "command": "wiz.scanWorkspace",
+        "title": "Wiz: Scan Workspace"
+      }
+    ],
+    "configuration": {
+      "title": "Wiz",
+      "properties": {
+        "wiz.pythonPath": {
+          "type": "string",
+          "default": "python",
+          "description": "Path to Python interpreter with wiz installed"
+        },
+        "wiz.scanOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically scan files on save"
+        },
+        "wiz.minSeverity": {
+          "type": "string",
+          "default": "warning",
+          "enum": [
+            "info",
+            "warning",
+            "critical"
+          ],
+          "description": "Minimum severity level to display"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  }
+}

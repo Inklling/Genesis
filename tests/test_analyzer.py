@@ -9,6 +9,9 @@ from wiz.analyzer import (
     collect_files,
     filter_report,
     diff_reports,
+    get_changed_lines,
+    _find_git_root,
+    _HUNK_RE,
 )
 from wiz.config import Severity, Finding, Category, Source
 
@@ -403,3 +406,82 @@ def test_diff_reports_updates_counts(sample_scan_report):
     assert diffed.critical == 0
     assert diffed.warnings == 1
     assert diffed.info == 0
+
+
+# ─── Git diff scanning tests ─────────────────────────────────────────
+
+
+def test_hunk_regex_single_line():
+    """Test hunk regex matches single line addition."""
+    m = _HUNK_RE.match("@@ -10,0 +15 @@")
+    assert m is not None
+    assert m.group(1) == "15"
+    assert m.group(2) is None  # single line, no count
+
+
+def test_hunk_regex_multi_line():
+    """Test hunk regex matches multi-line hunk."""
+    m = _HUNK_RE.match("@@ -10,5 +20,3 @@ def foo():")
+    assert m is not None
+    assert m.group(1) == "20"
+    assert m.group(2) == "3"
+
+
+def test_hunk_regex_zero_count():
+    """Test hunk regex with zero count (pure deletion)."""
+    m = _HUNK_RE.match("@@ -10,3 +12,0 @@")
+    assert m is not None
+    assert m.group(1) == "12"
+    assert m.group(2) == "0"
+
+
+def test_find_git_root():
+    """Test git root detection from Genesis directory."""
+    root = _find_git_root(Path(__file__).parent)
+    assert root is not None
+    assert (root / ".git").is_dir()
+
+
+def test_get_changed_lines_untracked(temp_dir):
+    """Untracked file returns empty set (all lines treated as changed)."""
+    fake_file = temp_dir / "new_file.py"
+    fake_file.write_text("x = 1\n")
+    # temp_dir is not a git repo, so this should return empty
+    result = get_changed_lines(temp_dir, "HEAD", fake_file)
+    assert result == set()
+
+
+class TestDiffScanCLI:
+    def test_diff_help(self):
+        """--diff flag appears in scan help."""
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "wiz", "scan", "--help"],
+            capture_output=True, text=True, timeout=10,
+        )
+        assert "--diff" in result.stdout
+
+    def test_diff_scan_runs(self):
+        """wiz scan . --diff runs without error in the Genesis repo."""
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "wiz", "scan", "wiz/", "--diff"],
+            capture_output=True, timeout=30,
+            cwd=str(Path(__file__).parent.parent),
+        )
+        stdout = result.stdout.decode("utf-8", errors="replace")
+        assert result.returncode in (0, 2)  # 0=clean, 2=critical found
+        assert "DIFF" in stdout
+
+    def test_diff_scan_json(self):
+        """wiz scan . --diff --output json produces valid JSON."""
+        import subprocess, sys, json as json_mod
+        result = subprocess.run(
+            [sys.executable, "-m", "wiz", "scan", "wiz/", "--diff", "--output", "json"],
+            capture_output=True, timeout=30,
+            cwd=str(Path(__file__).parent.parent),
+        )
+        stdout = result.stdout.decode("utf-8", errors="replace")
+        assert result.returncode in (0, 2)
+        data = json_mod.loads(stdout)
+        assert data["mode"] == "diff"

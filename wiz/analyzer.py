@@ -1,8 +1,11 @@
 """Orchestrator: static → LLM pipeline, file/directory scanning."""
 
 import fnmatch
+import re
+import subprocess
 import sys
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -100,6 +103,7 @@ def _analyze_single_file(
     cache: dict,
     use_cache: bool,
     cache_lock: Optional[threading.Lock] = None,
+    custom_rules=None,
 ) -> tuple[Optional[FileAnalysis], Optional[str], bool]:
     """Analyze a single file.
 
@@ -129,7 +133,7 @@ def _analyze_single_file(
     except OSError:
         return None, None, True
 
-    findings = analyze_file_static(fp_str, content, lang)
+    findings = analyze_file_static(fp_str, content, lang, custom_rules=custom_rules)
     fa = FileAnalysis(
         path=fp_str,
         language=lang,
@@ -145,14 +149,16 @@ def scan_quick(
     language_filter: Optional[str] = None,
     use_cache: bool = True,
     max_workers: int = 4,
+    custom_rules=None,
 ) -> ScanReport:
     """Quick scan — static analysis only (free, instant).
-    
+
     Args:
         root: Path to scan
         language_filter: Optional language to filter by
         use_cache: Whether to use file hash cache
         max_workers: Number of parallel workers (1 = sequential, 4 = default parallel)
+        custom_rules: Compiled custom rules from compile_custom_rules()
     """
     files, skipped = collect_files(root, language_filter)
     cache = load_cache() if use_cache else {}
@@ -161,7 +167,8 @@ def scan_quick(
     if max_workers == 1:
         # Sequential processing
         for filepath in files:
-            fa, updated_hash, is_error = _analyze_single_file(filepath, cache, use_cache)
+            fa, updated_hash, is_error = _analyze_single_file(
+                filepath, cache, use_cache, custom_rules=custom_rules)
             if fa:
                 analyses.append(fa)
                 if use_cache and updated_hash:
@@ -173,7 +180,8 @@ def scan_quick(
         cache_lock = threading.Lock()
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_file = {
-                executor.submit(_analyze_single_file, filepath, cache, use_cache, cache_lock): filepath
+                executor.submit(_analyze_single_file, filepath, cache, use_cache, cache_lock,
+                                custom_rules=custom_rules): filepath
                 for filepath in files
             }
 
@@ -220,17 +228,21 @@ def scan_deep(
     root: Path,
     language_filter: Optional[str] = None,
     use_cache: bool = True,
+    max_workers: int = 4,
+    custom_rules=None,
 ) -> ScanReport:
     """Deep scan — static + Claude API analysis.
 
     Runs static analysis first and saves intermediate results,
     then enriches with LLM. If LLM fails partway through, static
     findings are still preserved.
-    
+
     Args:
         root: Path to scan
         language_filter: Optional language to filter by
         use_cache: Whether to use file hash cache (skips LLM for unchanged files)
+        max_workers: Number of parallel workers for LLM calls (default: 4)
+        custom_rules: Compiled custom rules from compile_custom_rules()
     """
     files, skipped = collect_files(root, language_filter)
     cost_tracker = CostTracker()
@@ -288,13 +300,17 @@ def scan_deep(
             skipped += 1
             continue
         line_count = content.count("\n") + 1
-        static_findings = analyze_file_static(fp_str, content, lang)
+        static_findings = analyze_file_static(fp_str, content, lang, custom_rules=custom_rules)
         file_data.append((fp_str, lang, content, line_count, static_findings, fhash))
 
-    # Phase 2: LLM enrichment (may fail partway)
+    # Phase 2: LLM enrichment with parallel workers
     analyses = cached_analyses.copy()  # Start with cached results
-    for i, (fp_str, lang, content, line_count, static_findings, fhash) in enumerate(file_data):
-        print(f"  [{i+1}/{len(file_data)}] {fp_str} ({lang}, {line_count} lines)", flush=True)
+    analyses_lock = threading.Lock()
+    cache_write_lock = threading.Lock()
+
+    def _analyze_file_deep(index, fp_str, lang, content, line_count, static_findings, fhash):
+        """Per-file LLM analysis — runs in a thread."""
+        print(f"  [{index+1}/{len(file_data)}] {fp_str} ({lang}, {line_count} lines)", flush=True)
 
         llm_findings = []
         try:
@@ -310,7 +326,6 @@ def scan_deep(
         except LLMError as e:
             print(f"    LLM error: {e}", file=sys.stderr)
 
-        # Merge: LLM wins on conflicts, static survives if LLM empty
         merged = _merge_findings(static_findings, llm_findings)
 
         fa = FileAnalysis(
@@ -320,16 +335,32 @@ def scan_deep(
             findings=merged,
             file_hash=fhash,
         )
-        analyses.append(fa)
-        
-        # Cache the analysis for this file
+        with analyses_lock:
+            analyses.append(fa)
+
         if use_cache:
-            cache[fp_str] = {
-                "hash": fhash,
-                "language": lang,
-                "lines": line_count,
-                "findings": [f.to_dict() for f in merged],
-            }
+            with cache_write_lock:
+                cache[fp_str] = {
+                    "hash": fhash,
+                    "language": lang,
+                    "lines": line_count,
+                    "findings": [f.to_dict() for f in merged],
+                }
+
+    if max_workers == 1 or len(file_data) <= 1:
+        for i, (fp_str, lang, content, line_count, static_findings, fhash) in enumerate(file_data):
+            _analyze_file_deep(i, fp_str, lang, content, line_count, static_findings, fhash)
+    else:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = []
+            for i, (fp_str, lang, content, line_count, static_findings, fhash) in enumerate(file_data):
+                futures.append(executor.submit(
+                    _analyze_file_deep, i, fp_str, lang, content, line_count, static_findings, fhash))
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    print(f"    Worker error: {e}", file=sys.stderr)
 
     total_findings = sum(len(fa.findings) for fa in analyses)
     critical = sum(fa.critical_count for fa in analyses)
@@ -503,3 +534,217 @@ def cost_estimate(
     )
 
     return total_lines, len(files), est_tokens, est_cost
+
+
+# ─── Git diff scanning ───────────────────────────────────────────────
+
+_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+
+
+def _git_run(args: list[str], cwd: str) -> subprocess.CompletedProcess:
+    """Run a git command with safe UTF-8 encoding (avoids Windows cp1252 crashes)."""
+    result = subprocess.run(
+        args, capture_output=True, cwd=cwd,
+        encoding="utf-8", errors="replace",
+    )
+    # Ensure stdout/stderr are never None
+    if result.stdout is None:
+        result.stdout = ""
+    if result.stderr is None:
+        result.stderr = ""
+    return result
+
+
+def _find_git_root(path: Path) -> Optional[Path]:
+    """Find the git root for a path, or None."""
+    try:
+        result = _git_run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=str(path if path.is_dir() else path.parent),
+        )
+        if result.returncode == 0:
+            return Path(result.stdout.strip())
+    except (OSError, FileNotFoundError):
+        pass
+    return None
+
+
+def _resolve_base_ref(git_root: Path, base: Optional[str] = None) -> Optional[str]:
+    """Resolve the base ref to diff against. Tries base arg, then main, then master."""
+    candidates = [base] if base else ["main", "master"]
+    for ref in candidates:
+        result = _git_run(
+            ["git", "rev-parse", "--verify", ref],
+            cwd=str(git_root),
+        )
+        if result.returncode == 0:
+            return ref
+    return None
+
+
+def get_changed_files(git_root: Path, base_ref: str) -> list[Path]:
+    """Get list of files changed vs base ref (added, modified, renamed).
+
+    Uses three-dot syntax for branch comparisons, two-dot for HEAD/uncommitted.
+    Also picks up untracked files when diffing against HEAD.
+    """
+    # Try three-dot (branch comparison: changes since divergence)
+    result = _git_run(
+        ["git", "diff", "--name-only", "--diff-filter=AMR", f"{base_ref}...HEAD"],
+        cwd=str(git_root),
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        # Fallback: two-dot diff (includes uncommitted/staged changes)
+        result = _git_run(
+            ["git", "diff", "--name-only", "--diff-filter=AMR", base_ref],
+            cwd=str(git_root),
+        )
+
+    files = set()
+    if result.returncode == 0:
+        for line in result.stdout.strip().splitlines():
+            line = line.strip()
+            if line:
+                files.add(git_root / line)
+
+    # Also include untracked files (new files not yet committed)
+    result_untracked = _git_run(
+        ["git", "ls-files", "--others", "--exclude-standard"],
+        cwd=str(git_root),
+    )
+    if result_untracked.returncode == 0:
+        for line in result_untracked.stdout.strip().splitlines():
+            line = line.strip()
+            if line:
+                files.add(git_root / line)
+
+    return list(files)
+
+
+def get_changed_lines(git_root: Path, base_ref: str, filepath: Path) -> set[int]:
+    """Get the set of changed line numbers in a file vs base ref.
+
+    Parses unified diff hunks to extract added/modified line ranges.
+    """
+    try:
+        rel = filepath.relative_to(git_root)
+    except ValueError:
+        return set()
+
+    result = _git_run(
+        ["git", "diff", "-U0", f"{base_ref}...HEAD", "--", str(rel)],
+        cwd=str(git_root),
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        # Fallback: two-dot diff for uncommitted changes
+        result = _git_run(
+            ["git", "diff", "-U0", base_ref, "--", str(rel)],
+            cwd=str(git_root),
+        )
+    if result.returncode != 0 or not result.stdout.strip():
+        # Untracked file — all lines are "changed"
+        return set()
+
+    changed = set()
+    for line in result.stdout.splitlines():
+        m = _HUNK_RE.match(line)
+        if m:
+            start = int(m.group(1))
+            count = int(m.group(2)) if m.group(2) is not None else 1
+            if count == 0:
+                # Pure deletion — include the adjacent line for context
+                changed.add(start)
+            else:
+                for i in range(start, start + count):
+                    changed.add(i)
+    return changed
+
+
+def scan_diff(
+    root: Path,
+    base_ref: Optional[str] = None,
+    language_filter: Optional[str] = None,
+    custom_rules=None,
+) -> tuple[ScanReport, str]:
+    """Scan only files changed vs a git base ref, filtering to changed lines.
+
+    Returns (ScanReport, resolved_base_ref).
+    """
+    git_root = _find_git_root(root)
+    if not git_root:
+        raise ValueError("Not a git repository")
+
+    ref = _resolve_base_ref(git_root, base_ref)
+    if not ref:
+        target = base_ref or "main/master"
+        raise ValueError(f"Could not resolve git ref '{target}'")
+
+    changed_files = get_changed_files(git_root, ref)
+    if not changed_files:
+        return ScanReport(
+            root=str(root), mode="diff", files_scanned=0, files_skipped=0,
+            total_findings=0, critical=0, warnings=0, info=0,
+            timestamp=datetime.now().isoformat(timespec="seconds"),
+        ), ref
+
+    file_analyses = []
+    skipped = 0
+
+    for filepath in changed_files:
+        if not filepath.is_file():
+            skipped += 1
+            continue
+
+        lang = detect_language(filepath)
+        if not lang:
+            skipped += 1
+            continue
+        if language_filter and lang != language_filter:
+            skipped += 1
+            continue
+
+        try:
+            content = filepath.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            skipped += 1
+            continue
+
+        changed_lines = get_changed_lines(git_root, ref, filepath)
+
+        findings = analyze_file_static(str(filepath), content, lang, custom_rules=custom_rules)
+
+        # Filter to only findings on changed lines (±2 line tolerance)
+        # Empty changed_lines means untracked file — keep all findings
+        if changed_lines:
+            filtered = []
+            for f in findings:
+                if any(abs(f.line - cl) <= 2 for cl in changed_lines):
+                    filtered.append(f)
+            findings = filtered
+
+        if findings:
+            lines_count = content.count("\n") + 1
+            try:
+                rel_path = str(filepath.relative_to(git_root))
+            except ValueError:
+                rel_path = str(filepath)
+            file_analyses.append(FileAnalysis(
+                path=rel_path, language=lang,
+                lines=lines_count, findings=findings,
+            ))
+
+    total = sum(len(fa.findings) for fa in file_analyses)
+    crit = sum(fa.critical_count for fa in file_analyses)
+    warn = sum(fa.warning_count for fa in file_analyses)
+    info = sum(fa.info_count for fa in file_analyses)
+
+    report = ScanReport(
+        root=str(root), mode="diff",
+        files_scanned=len(changed_files) - skipped,
+        files_skipped=skipped,
+        total_findings=total, critical=crit, warnings=warn, info=info,
+        file_analyses=file_analyses,
+        timestamp=datetime.now().isoformat(timespec="seconds"),
+    )
+
+    return report, ref

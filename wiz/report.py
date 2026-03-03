@@ -3,7 +3,10 @@
 import json
 import sys
 from collections import Counter
-from .config import Finding, FileAnalysis, ScanReport, Severity, Source, Category
+from .config import (
+    Finding, FileAnalysis, ScanReport, Severity, Source, Category,
+    ProjectAnalysis, FixReport, FixSource, FixStatus,
+)
 
 
 def _ensure_utf8():
@@ -130,28 +133,171 @@ def print_report(report: ScanReport, verbose: bool = False):
     print_scan_summary(report)
 
 
-def print_debug_result(filepath: str, findings: list[Finding], llm_response: str = ""):
-    """Print debug command output."""
+CONFIDENCE_BADGE = {
+    "high": ("green", "HIGH"),
+    "medium": ("yellow", "MED"),
+    "low": ("gray", "LOW"),
+}
+
+
+def _print_debug_finding(f: dict, index: int):
+    """Render a single structured debug/optimize finding."""
+    severity = f.get("severity", "info")
+    sev_color = {"critical": "red", "warning": "yellow", "info": "blue"}.get(severity, "blue")
+    sev_label = severity.upper().ljust(8)
+
+    confidence = f.get("confidence", "medium")
+    conf_color, conf_label = CONFIDENCE_BADGE.get(confidence, ("gray", "???"))
+
+    title = f.get("title", "Finding")
+    line = f.get("line", "?")
+    end_line = f.get("end_line")
+    category = f.get("category", "")
+    line_range = f"line {line}" + (f"-{end_line}" if end_line else "")
+
+    print(f"  {_c(sev_color, sev_label)} {_c(conf_color, f'[{conf_label}]')}  "
+          f"{_c('bold', title)}  {_c('dim', f'({line_range}, {category})')}")
+
+    description = f.get("description", "")
+    if description:
+        print(f"           {description}")
+
+    suggestion = f.get("suggestion", "")
+    if suggestion:
+        print(f"           {_c('green', '→ ' + suggestion)}")
+
+    code_fix = f.get("code_fix")
+    if code_fix:
+        print(f"           {_c('dim', 'Fix:')}")
+        for code_line in code_fix.splitlines():
+            print(f"             {_c('green', code_line)}")
+    print()
+
+
+def print_debug_result(filepath: str, static_findings: list[Finding],
+                       llm_result: "Optional[dict]" = None):
+    """Print debug command output.
+
+    llm_result can be:
+    - dict with 'findings' key → structured output
+    - dict with 'raw_markdown' key → raw LLM output (fallback)
+    - None → static findings only
+    """
     print(f"\n{_c('bold', f'Debug: {filepath}')}")
     print("═" * 70)
 
-    if findings:
+    if static_findings:
         print(f"\n{_c('bold', 'Static analysis findings:')}")
-        for f in findings:
+        for f in static_findings:
             print_finding(f, show_file=False)
 
-    if llm_response:
+    if llm_result is None:
+        print()
+        return
+
+    if "raw_markdown" in llm_result:
         print(f"\n{_c('bold', 'Claude analysis:')}")
-        print(llm_response)
+        print(llm_result["raw_markdown"])
+        print()
+        return
+
+    # Structured output
+    summary = llm_result.get("summary", "")
+    findings = llm_result.get("findings", [])
+    quick_wins = llm_result.get("quick_wins", [])
+
+    if summary:
+        print(f"\n{_c('bold', 'Summary:')} {summary}")
+
+    if findings:
+        print(f"\n{_c('bold', f'Claude found {len(findings)} issue(s):')}")
+        for i, f in enumerate(findings, 1):
+            _print_debug_finding(f, i)
+
+    if quick_wins:
+        print(f"{_c('bold', 'Quick wins:')}")
+        for qw in quick_wins:
+            print(f"  {_c('green', '→')} {qw}")
+
+    if not findings and not quick_wins:
+        print(f"\n  {_c('green', 'No additional issues found by Claude.')}")
     print()
 
 
-def print_optimize_result(filepath: str, llm_response: str):
-    """Print optimize command output."""
+def print_optimize_result(filepath: str, static_findings: list[Finding],
+                          llm_result: "Optional[dict]" = None):
+    """Print optimize command output.
+
+    Same structured/raw_markdown/None handling as debug.
+    """
     print(f"\n{_c('bold', f'Optimize: {filepath}')}")
     print("═" * 70)
-    print(f"\n{llm_response}")
+
+    if static_findings:
+        perf_findings = [f for f in static_findings
+                         if f.category in (Category.PERFORMANCE, Category.STYLE)]
+        if perf_findings:
+            print(f"\n{_c('bold', 'Static analysis (perf-relevant):')}")
+            for f in perf_findings:
+                print_finding(f, show_file=False)
+
+    if llm_result is None:
+        print()
+        return
+
+    if "raw_markdown" in llm_result:
+        print(f"\n{_c('bold', 'Claude analysis:')}")
+        print(llm_result["raw_markdown"])
+        print()
+        return
+
+    # Structured output
+    summary = llm_result.get("summary", "")
+    findings = llm_result.get("findings", [])
+    quick_wins = llm_result.get("quick_wins", [])
+
+    if summary:
+        print(f"\n{_c('bold', 'Assessment:')} {summary}")
+
+    if findings:
+        print(f"\n{_c('bold', f'Found {len(findings)} optimization(s):')}")
+        for i, f in enumerate(findings, 1):
+            _print_debug_finding(f, i)
+
+    if quick_wins:
+        print(f"{_c('bold', 'Quick wins:')}")
+        for qw in quick_wins:
+            print(f"  {_c('green', '→')} {qw}")
+
+    if not findings and not quick_wins:
+        print(f"\n  {_c('green', 'Code is well-optimized.')}")
     print()
+
+
+def print_debug_json(filepath: str, static_findings: list[Finding],
+                     llm_result: "Optional[dict]", tracker=None):
+    """Print debug result as JSON to stdout."""
+    output = {
+        "filepath": filepath,
+        "static_findings": [f.to_dict() for f in static_findings] if static_findings else [],
+        "llm_result": llm_result,
+    }
+    if tracker:
+        output["cost_usd"] = round(tracker.total_cost, 6)
+    print(json.dumps(output, indent=2))
+
+
+def print_optimize_json(filepath: str, static_findings: list[Finding],
+                        llm_result: "Optional[dict]", tracker=None):
+    """Print optimize result as JSON to stdout."""
+    output = {
+        "filepath": filepath,
+        "static_findings": [f.to_dict() for f in static_findings] if static_findings else [],
+        "llm_result": llm_result,
+    }
+    if tracker:
+        output["cost_usd"] = round(tracker.total_cost, 6)
+    print(json.dumps(output, indent=2))
 
 
 def print_cost_estimate(total_lines: int, total_files: int, est_tokens: int, est_cost: float):
@@ -193,6 +339,179 @@ def print_setup_status(api_key_set: bool, anthropic_installed: bool):
     else:
         print(f"  Deep scan (paid):   {_c('red', 'not ready')}")
     print()
+
+
+# ─── Project analysis rendering ──────────────────────────────────────
+
+def print_graph_summary(graph_dict: dict, metrics_dict: dict):
+    """ASCII dependency graph summary with fan-in/fan-out, hubs, cycles, dead modules."""
+    print(f"\n{_c('bold', 'Dependency Graph')}")
+    print("=" * 70)
+
+    m = metrics_dict
+    print(f"  Files:    {m.get('total_files', 0)}")
+    print(f"  Edges:    {m.get('total_edges', 0)}")
+    print(f"  Coupling: {m.get('coupling_score', 0):.2%}")
+    print(f"  Avg fan-in:  {m.get('avg_fan_in', 0):.1f}")
+    print(f"  Avg fan-out: {m.get('avg_fan_out', 0):.1f}")
+
+    max_fi = m.get("max_fan_in", ["", 0])
+    max_fo = m.get("max_fan_out", ["", 0])
+    if max_fi[0]:
+        print(f"  Max fan-in:  {max_fi[0]} ({max_fi[1]})")
+    if max_fo[0]:
+        print(f"  Max fan-out: {max_fo[0]} ({max_fo[1]})")
+
+    hubs = m.get("hub_files", [])
+    if hubs:
+        print(f"\n  {_c('yellow', 'Hub files')} (high connectivity):")
+        for h in hubs:
+            node = graph_dict.get("nodes", {}).get(h, {})
+            print(f"    {h}  (in={node.get('fan_in', '?')}, out={node.get('fan_out', '?')})")
+
+    cycles = m.get("circular_deps", [])
+    if cycles:
+        print(f"\n  {_c('red', f'Circular dependencies ({len(cycles)})')}:")
+        for cycle in cycles[:5]:
+            print(f"    {' -> '.join(cycle)}")
+        if len(cycles) > 5:
+            print(f"    ... and {len(cycles) - 5} more")
+
+    dead = m.get("dead_modules", [])
+    if dead:
+        print(f"\n  {_c('gray', f'Dead modules ({len(dead)})')} (never imported):")
+        for d in dead[:10]:
+            print(f"    {d}")
+        if len(dead) > 10:
+            print(f"    ... and {len(dead) - 10} more")
+
+    entries = m.get("entry_points", [])
+    if entries:
+        print(f"\n  Entry points: {', '.join(entries[:10])}")
+
+    # File listing with edges
+    nodes = graph_dict.get("nodes", {})
+    if nodes:
+        print(f"\n  {_c('bold', 'File dependencies:')}")
+        for path, node in sorted(nodes.items()):
+            imports = node.get("imports", [])
+            fi = node.get("fan_in", 0)
+            fo = node.get("fan_out", 0)
+            marker = ""
+            if node.get("is_hub"):
+                marker = f" {_c('yellow', '[HUB]')}"
+            print(f"    {path}  (in={fi}, out={fo}){marker}")
+            for imp in imports[:5]:
+                print(f"      -> {imp}")
+            if len(imports) > 5:
+                print(f"      ... and {len(imports) - 5} more")
+    print()
+
+
+def print_cross_file_finding(cf: dict):
+    """Print a single cross-file finding: source_file:line -> target_file:line."""
+    sev = cf.get("severity", "warning")
+    sev_color = {"critical": "red", "warning": "yellow", "info": "blue"}.get(sev, "yellow")
+    sev_label = sev.upper().ljust(8)
+
+    source = cf.get("source_file", "?")
+    target = cf.get("target_file", "?")
+    line = cf.get("line", "?")
+    target_line = cf.get("target_line")
+
+    location = f"{source}:{line}"
+    if target_line:
+        location += f" -> {target}:{target_line}"
+    else:
+        location += f" -> {target}"
+
+    rule = cf.get("rule", "")
+    print(f"  {_c(sev_color, sev_label)}  {_c('dim', f'[{rule}]')}  {location}")
+    print(f"           {cf.get('message', '')}")
+    suggestion = cf.get("suggestion")
+    if suggestion:
+        print(f"           {_c('green', '-> ' + suggestion)}")
+    print()
+
+
+def print_project_analysis(analysis: ProjectAnalysis):
+    """Full project analysis report."""
+    print(f"\n{_c('bold', '=' * 70)}")
+    print(f"{_c('bold', '  Project Analysis')}")
+    print(f"{_c('bold', '=' * 70)}")
+
+    # Graph summary
+    print_graph_summary(analysis.dependency_graph, analysis.graph_metrics)
+
+    # Cross-file findings
+    if analysis.cross_file_findings:
+        print(f"{_c('bold', f'Cross-file Findings ({len(analysis.cross_file_findings)})')}")
+        print("-" * 70)
+        for cf in analysis.cross_file_findings:
+            print_cross_file_finding(cf.to_dict())
+    else:
+        print(f"  {_c('green', 'No cross-file issues found.')}\n")
+
+    # Synthesis
+    if analysis.synthesis:
+        s = analysis.synthesis
+        print(f"{_c('bold', 'Project Synthesis')}")
+        print("-" * 70)
+
+        summary = s.get("architecture_summary", "")
+        if summary:
+            print(f"  {summary}\n")
+
+        score = s.get("health_score", 0)
+        if score:
+            score_color = "green" if score >= 7 else "yellow" if score >= 4 else "red"
+            print(f"  Health score: {_c(score_color, f'{score}/10')}\n")
+
+        issues = s.get("architectural_issues", [])
+        if issues:
+            print(f"  {_c('bold', 'Architectural issues:')}")
+            for issue in issues:
+                sev = issue.get("severity", "warning")
+                sev_color = {"critical": "red", "warning": "yellow", "info": "blue"}.get(sev, "yellow")
+                print(f"    {_c(sev_color, sev.upper())}  {issue.get('title', '')}")
+                print(f"            {issue.get('description', '')}")
+                affected = issue.get("affected_files", [])
+                if affected:
+                    print(f"            Files: {', '.join(affected)}")
+                suggestion = issue.get("suggestion")
+                if suggestion:
+                    print(f"            {_c('green', '-> ' + suggestion)}")
+                print()
+
+        positives = s.get("positive_patterns", [])
+        if positives:
+            print(f"  {_c('bold', 'Positive patterns:')}")
+            for p in positives:
+                print(f"    {_c('green', '+')} {p}")
+            print()
+
+        recs = s.get("recommendations", [])
+        if recs:
+            print(f"  {_c('bold', 'Recommendations:')}")
+            for r in recs:
+                priority = r.get("priority", "medium")
+                p_color = {"high": "red", "medium": "yellow", "low": "blue"}.get(priority, "yellow")
+                print(f"    {_c(p_color, f'[{priority.upper()}]')}  {r.get('title', '')}")
+                desc = r.get("description", "")
+                if desc:
+                    print(f"            {desc}")
+                print()
+
+    # Cost
+    print(f"  Files analyzed: {analysis.files_analyzed}")
+    if analysis.llm_cost_usd > 0:
+        print(f"  LLM cost: ${analysis.llm_cost_usd:.4f}")
+    print()
+
+
+def print_project_json(analysis: ProjectAnalysis):
+    """JSON output for CI/CD."""
+    print(json.dumps(analysis.to_dict(), indent=2))
 
 
 def print_json(report: ScanReport):
@@ -324,3 +643,87 @@ def to_sarif(report: ScanReport) -> dict:
     }
     
     return sarif
+
+
+# ─── Fix report rendering ────────────────────────────────────────────
+
+SOURCE_BADGE = {
+    FixSource.DETERMINISTIC: ("green", "deterministic"),
+    FixSource.LLM: ("yellow", "llm"),
+}
+
+STATUS_BADGE = {
+    FixStatus.APPLIED: ("green", "applied"),
+    FixStatus.SKIPPED: ("yellow", "skipped"),
+    FixStatus.FAILED: ("red", "failed"),
+    FixStatus.PENDING: ("gray", "pending"),
+}
+
+
+def print_fix_report(report: FixReport, dry_run: bool = True):
+    """Display fixes with diff-style output."""
+    mode = "DRY RUN" if dry_run else "APPLIED"
+    print(f"\n{_c('bold', f'Fix Report — {mode}')}")
+    print("═" * 70)
+
+    if not report.fixes:
+        print(f"\n  {_c('green', 'No fixable issues found.')}")
+        print()
+        return
+
+    for fix in report.fixes:
+        src_color, src_label = SOURCE_BADGE.get(fix.source, ("gray", "unknown"))
+        stat_color, stat_label = STATUS_BADGE.get(fix.status, ("gray", "unknown"))
+
+        print(f"\n  {_c('bold', f'{fix.file}:{fix.line}')} "
+              f"{_c('dim', f'[{fix.rule}]')} "
+              f"({_c(src_color, src_label)}) "
+              f"[{_c(stat_color, stat_label)}]")
+
+        # Show diff
+        if fix.original_code:
+            for line in fix.original_code.rstrip("\n").splitlines():
+                print(f"  {_c('red', '- ' + line)}")
+        if fix.fixed_code:
+            for line in fix.fixed_code.rstrip("\n").splitlines():
+                print(f"  {_c('green', '+ ' + line)}")
+        elif fix.original_code:
+            print(f"  {_c('green', '+ (removed)')}")
+
+        print(f"  {_c('dim', fix.explanation)}")
+
+    # Summary
+    print(f"\n{'─' * 70}")
+    parts = []
+    if report.applied:
+        parts.append(_c("green", f"{report.applied} applied"))
+    if report.skipped:
+        parts.append(_c("yellow", f"{report.skipped} skipped"))
+    if report.failed:
+        parts.append(_c("red", f"{report.failed} failed"))
+    print(f"  Fixes: {', '.join(parts)}  (total: {report.total_fixes})")
+
+    if report.verification:
+        v = report.verification
+        print(f"\n{_c('bold', 'Verification:')}")
+        if v.get("error"):
+            print(f"  {_c('red', v['error'])}")
+        else:
+            print(f"  Issues resolved:    {_c('green', str(v.get('resolved', 0)))}")
+            print(f"  Issues remaining:   {v.get('remaining', 0)}")
+            new_count = v.get("new_issues", 0)
+            if new_count > 0:
+                print(f"  {_c('red', f'New issues introduced: {new_count}')}")
+                for nf in v.get("new_findings", [])[:5]:
+                    print(f"    line {nf.get('line', '?')}: [{nf.get('rule', '?')}] {nf.get('message', '')}")
+            else:
+                print(f"  New issues:         {_c('green', '0')}")
+
+    if report.llm_cost_usd > 0:
+        print(f"  LLM cost: ${report.llm_cost_usd:.4f}")
+    print()
+
+
+def print_fix_json(report: FixReport):
+    """JSON output for CI/CD."""
+    print(json.dumps(report.to_dict(), indent=2))
