@@ -12,7 +12,7 @@ from .config import (
 )
 from .analyzer import collect_files, detect_language
 from .detector import analyze_file_static
-from .depgraph import build_dependency_graph, compute_metrics, DepGraph, GraphMetrics
+from .depgraph import build_dependency_graph, build_call_graph, compute_metrics, DepGraph, GraphMetrics
 
 
 # ─── Signature extraction ────────────────────────────────────────────
@@ -219,17 +219,78 @@ def analyze_project(
     metrics = compute_metrics(graph)
     graph_summary = _format_graph_summary(graph, metrics)
 
-    # 5. No-LLM mode: return graph + metrics only
+    # 4b. Semantic extraction + cross-file analysis (v0.8.0)
+    from .ts_semantic import extract_semantics
+    semantics_by_file = {}
+    for rel, content in file_contents.items():
+        lang = detect_language(root_path / rel)
+        if lang:
+            sem = extract_semantics(content, rel, lang)
+            if sem:
+                semantics_by_file[rel] = sem
+
+    # Build call graph from semantics
+    call_graph = None
+    cross_file_static_findings = []
+    if semantics_by_file:
+        call_graph = build_call_graph(graph, semantics_by_file)
+
+        from .ts_callgraph import find_dead_functions, find_arg_count_mismatches
+        from .ts_smells import check_near_duplicate_functions
+
+        cross_file_static_findings.extend(find_dead_functions(call_graph, graph))
+        cross_file_static_findings.extend(find_arg_count_mismatches(call_graph, semantics_by_file))
+        cross_file_static_findings.extend(check_near_duplicate_functions(semantics_by_file))
+
+        # v0.10.0: Cross-file contract inference
+        try:
+            from .ts_types import infer_types, infer_contracts
+            from .ts_lang_config import get_config as get_lang_config
+            type_maps = {}
+            for rel, sem in semantics_by_file.items():
+                lang_cfg = get_lang_config(sem.language)
+                if lang_cfg:
+                    content = file_contents.get(rel, "")
+                    src_bytes = content.encode("utf-8")
+                    type_maps[rel] = infer_types(sem, src_bytes, lang_cfg)
+            if type_maps:
+                contracts = infer_contracts(semantics_by_file, type_maps, call_graph)
+                # Contracts are available for downstream analysis
+                # (currently used by null safety checks in per-file analysis)
+        except Exception:
+            pass  # graceful degradation
+
+    # 5. No-LLM mode: return graph + metrics + static cross-file findings
     if not use_llm:
+        # Convert static cross-file findings to FileAnalysis format
+        static_per_file: dict[str, list] = {}
+        for f in cross_file_static_findings:
+            static_per_file.setdefault(f.file, []).append(f)
+
+        per_file_analyses = []
+        for rel, content in file_contents.items():
+            lang = detect_language(root_path / rel)
+            abs_path = str(root_path / rel)
+            fa = FileAnalysis(
+                path=abs_path,
+                language=lang or "unknown",
+                lines=content.count("\n") + 1,
+                findings=static_per_file.get(rel, []),
+            )
+            if fa.findings:
+                per_file_analyses.append(fa)
+
         return ProjectAnalysis(
             root=str(root_path),
             files_analyzed=len(file_contents),
             graph_metrics=metrics.to_dict(),
             dependency_graph=graph.to_dict(),
+            per_file_findings=per_file_analyses,
         )
 
     # 6. LLM analysis
     from .llm import CostTracker, analyze_file_with_context, synthesize_project
+    from .llm_focus import build_focus_areas, build_focused_prompt
 
     cost_tracker = CostTracker()
 
@@ -256,8 +317,21 @@ def analyze_project(
         # Static analysis
         static_findings = analyze_file_static(abs_path, content, lang)
 
+        # Add any cross-file static findings for this file
+        for cf in cross_file_static_findings:
+            if cf.file == rel_path:
+                static_findings.append(cf)
+
         # Select context files
         context = _select_context_for_file(rel_path, graph, file_contents, depth=depth)
+
+        # Build focus areas for smarter LLM prompting
+        file_taint = [f for f in static_findings if f.rule == "taint-flow"]
+        file_dead = [f for f in static_findings if f.rule == "dead-function"]
+        file_scope = [f for f in static_findings if f.rule in ("unused-variable", "possibly-uninitialized", "variable-shadowing")]
+        file_smells = [f for f in static_findings if f.rule in ("god-class", "feature-envy", "long-method", "near-duplicate")]
+        focus_areas = build_focus_areas(static_findings, file_taint, file_dead, file_scope, file_smells)
+        focus_prompt = build_focused_prompt(focus_areas)
 
         # LLM cross-file analysis
         try:

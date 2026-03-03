@@ -483,11 +483,71 @@ def _check_function(node: ast.FunctionDef, filepath: str, findings: list[Finding
 
 def analyze_file_static(filepath: str, content: str, language: str,
                         custom_rules=None) -> list[Finding]:
-    """Run all static checks (regex + AST if Python)."""
+    """Run all static checks (regex + tree-sitter AST + Python AST fallback + semantic)."""
     findings = run_regex_checks(content, filepath, language, custom_rules=custom_rules)
 
+    # AST checks: tree-sitter for all languages, Python ast as supplement/fallback
+    from .ts_checks import run_tree_sitter_checks
+    ts_findings = run_tree_sitter_checks(content, filepath, language)
+    if ts_findings:
+        findings.extend(ts_findings)
+
     if language == "python":
+        # Always run Python AST checks — they cover checks tree-sitter doesn't
+        # (type-comparison, global-keyword, shadowed-builtin assignments, etc.)
+        # Dedup below merges overlapping findings by (file, line, rule)
         findings.extend(run_python_ast_checks(content, filepath))
+
+    # v0.8.0: Semantic analysis (scope, taint, smells)
+    from .ts_semantic import extract_semantics
+    from .ts_lang_config import get_config
+    semantics = extract_semantics(content, filepath, language)
+    if semantics:
+        from .ts_scope import (
+            check_unused_variables,
+            check_variable_shadowing,
+            check_uninitialized_variables,
+        )
+        from .ts_taint import analyze_taint
+        from .ts_smells import check_god_class, check_feature_envy, check_long_method
+
+        findings.extend(check_unused_variables(semantics, filepath))
+        findings.extend(check_variable_shadowing(semantics, filepath))
+        findings.extend(check_uninitialized_variables(semantics, filepath))
+
+        config = get_config(language)
+        if config:
+            source_bytes = content.encode("utf-8")
+
+            # v0.9.0: Build CFG and use path-sensitive analysis when available
+            from .ts_cfg import build_cfg
+            cfgs = build_cfg(semantics, source_bytes, config)
+            if cfgs:
+                from .ts_taint import analyze_taint_pathsensitive
+                from .ts_resource import check_resource_leaks
+                findings.extend(analyze_taint_pathsensitive(
+                    semantics, source_bytes, config, filepath, cfgs))
+                findings.extend(check_resource_leaks(
+                    semantics, source_bytes, config, filepath, cfgs))
+            else:
+                # Fallback to flow-insensitive taint analysis
+                findings.extend(analyze_taint(semantics, source_bytes, config, filepath))
+
+        # v0.10.0: Type inference + null safety
+        if config:
+            try:
+                from .ts_types import infer_types
+                from .ts_nullsafety import check_null_safety
+                type_map = infer_types(semantics, source_bytes, config, cfgs=cfgs if config else None)
+                if type_map and type_map.types:
+                    findings.extend(check_null_safety(
+                        semantics, type_map, config, filepath, cfgs=cfgs if config else None))
+            except Exception:
+                pass  # graceful degradation
+
+        findings.extend(check_god_class(semantics, filepath))
+        findings.extend(check_feature_envy(semantics, filepath))
+        findings.extend(check_long_method(semantics, filepath))
 
     # Deduplicate: same file + line + rule
     seen = set()

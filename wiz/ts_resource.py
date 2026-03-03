@@ -1,0 +1,232 @@
+"""Resource leak detection using CFG-based forward analysis.
+
+Tracks resource open/close operations per function. At exit blocks, reports
+unclosed resources. Detects context managers (with/using blocks) as automatic
+close. Also detects try/finally patterns as safe cleanup.
+
+Returns [] when tree-sitter is not available or no CFG.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+
+from .config import Finding, Severity, Category, Source
+from .ts_lang_config import LanguageConfig
+from .ts_semantic import FileSemantics, FunctionDef
+from .ts_cfg import FunctionCFG, get_reverse_postorder
+
+
+# ─── Data structures ─────────────────────────────────────────────────
+
+@dataclass
+class ResourceState:
+    variable: str
+    open_line: int
+    kind: str  # "file", "connection", "lock", "socket", etc.
+    is_context_managed: bool = False
+    closed: bool = False
+    close_line: int = 0
+
+
+# ─── Analysis ────────────────────────────────────────────────────────
+
+def _find_context_managed_lines(source_bytes: bytes, language: str) -> set[int]:
+    """Find lines inside 'with' blocks (Python) or 'using' blocks (C#).
+
+    Returns the set of lines that are inside a context manager scope.
+    These resources are automatically closed.
+    """
+    lines = source_bytes.decode("utf-8", errors="replace").splitlines()
+    with_lines: set[int] = set()
+
+    if language == "python":
+        # Track indentation of 'with' statements
+        with_indents: list[int] = []
+        for i, line in enumerate(lines, 1):
+            stripped = line.lstrip()
+            indent = len(line) - len(stripped)
+
+            # Close any 'with' blocks that have ended (dedent)
+            with_indents = [wi for wi in with_indents if indent > wi]
+
+            if stripped.startswith("with ") and stripped.rstrip().endswith(":"):
+                with_indents.append(indent)
+                with_lines.add(i)
+            elif with_indents:
+                with_lines.add(i)
+
+    elif language == "csharp":
+        # Track 'using' statements
+        for i, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if stripped.startswith("using ") and ("=" in stripped or "var " in stripped):
+                with_lines.add(i)
+
+    elif language == "java":
+        # try-with-resources: try (Resource r = ...)
+        for i, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if stripped.startswith("try") and "(" in stripped:
+                with_lines.add(i)
+
+    return with_lines
+
+
+def _find_finally_closed_vars(
+    source_bytes: bytes,
+    config: LanguageConfig,
+    fdef: FunctionDef,
+) -> set[str]:
+    """Find variable names that are closed in finally blocks.
+
+    Resources closed in finally are always cleaned up regardless of exception path.
+    """
+    lines = source_bytes.decode("utf-8", errors="replace").splitlines()
+    closed_vars: set[str] = set()
+
+    in_finally = False
+    finally_indent = 0
+
+    for i in range(fdef.line - 1, min(fdef.end_line, len(lines))):
+        line = lines[i]
+        stripped = line.lstrip()
+        indent = len(line) - len(stripped)
+
+        if stripped.startswith("finally") and stripped.rstrip().endswith(":"):
+            in_finally = True
+            finally_indent = indent
+            continue
+        elif in_finally:
+            if indent <= finally_indent and stripped and not stripped.startswith("#"):
+                in_finally = False
+            else:
+                # Check for close patterns
+                for open_pat, close_pat, _, _ in config.resource_patterns:
+                    if close_pat in stripped:
+                        # Extract variable name: var.close() or close(var)
+                        m = re.search(r'(\w+)\.' + re.escape(close_pat), stripped)
+                        if m:
+                            closed_vars.add(m.group(1))
+
+    return closed_vars
+
+
+def check_resource_leaks(
+    semantics: FileSemantics,
+    source_bytes: bytes,
+    config: LanguageConfig,
+    filepath: str,
+    cfgs: dict[int, FunctionCFG],
+) -> list[Finding]:
+    """Detect unclosed resources using CFG-based forward analysis.
+
+    Per function:
+    1. Scan for resource open patterns (assignment containing open/connect/etc.)
+    2. Track resource close patterns through CFG blocks
+    3. At exit blocks, report resources that are open but never closed
+    4. Context managers (with/using) count as automatic close
+    5. Resources closed in finally blocks are considered safe
+
+    Returns [] if no resource patterns configured.
+    """
+    if not config.resource_patterns:
+        return []
+
+    findings = []
+    lines = source_bytes.decode("utf-8", errors="replace").splitlines()
+
+    # Find context-managed lines
+    context_managed_lines = _find_context_managed_lines(source_bytes, semantics.language)
+
+    # Build fdef → function scope mapping
+    fdef_to_scope: dict[str, int] = {}
+    for scope in semantics.scopes:
+        if scope.kind == "function" and scope.name:
+            fdef_to_scope[scope.name] = scope.scope_id
+
+    for fdef in semantics.function_defs:
+        func_scope_id = fdef_to_scope.get(fdef.qualified_name, fdef.scope_id)
+        cfg = cfgs.get(func_scope_id)
+        if cfg is None:
+            continue
+
+        # Find variables closed in finally blocks
+        finally_closed = _find_finally_closed_vars(source_bytes, config, fdef)
+
+        # Track open resources: {variable_name: ResourceState}
+        resources: dict[str, ResourceState] = {}
+
+        # Scan all assignments in this function for open patterns
+        for asgn in semantics.assignments:
+            if not (fdef.line <= asgn.line <= fdef.end_line):
+                continue
+            if asgn.is_parameter or asgn.is_augmented:
+                continue
+
+            rhs = asgn.value_text
+            for open_pat, close_pat, has_ctx_mgr, kind in config.resource_patterns:
+                if open_pat in rhs:
+                    is_ctx = (
+                        (has_ctx_mgr and asgn.line in context_managed_lines)
+                        or asgn.name in finally_closed
+                    )
+                    resources[asgn.name] = ResourceState(
+                        variable=asgn.name,
+                        open_line=asgn.line,
+                        kind=kind,
+                        is_context_managed=is_ctx,
+                    )
+                    break
+
+        if not resources:
+            continue
+
+        # Scan for close calls
+        for call in semantics.function_calls:
+            if not (fdef.line <= call.line <= fdef.end_line):
+                continue
+
+            call_text = call.name
+            if call.receiver:
+                call_text = f"{call.receiver}.{call.name}"
+
+            for open_pat, close_pat, _, _ in config.resource_patterns:
+                if close_pat in call_text:
+                    # Find which resource this closes
+                    if call.receiver and call.receiver in resources:
+                        resources[call.receiver].closed = True
+                        resources[call.receiver].close_line = call.line
+                    else:
+                        # Check line text for resource variable
+                        line_idx = call.line - 1
+                        if 0 <= line_idx < len(lines):
+                            line_text = lines[line_idx]
+                            for rname, rstate in resources.items():
+                                if re.search(r'\b' + re.escape(rname) + r'\b', line_text):
+                                    rstate.closed = True
+                                    rstate.close_line = call.line
+
+        # Report unclosed resources
+        for rname, rstate in resources.items():
+            if rstate.closed or rstate.is_context_managed:
+                continue
+
+            findings.append(Finding(
+                file=filepath,
+                line=rstate.open_line,
+                severity=Severity.WARNING,
+                category=Category.BUG,
+                source=Source.AST,
+                rule="resource-leak",
+                message=(
+                    f"Resource '{rstate.variable}' ({rstate.kind}) opened but never closed"
+                ),
+                suggestion=(
+                    f"Close '{rstate.variable}' explicitly or use a context manager "
+                    f"(e.g., 'with' statement)"
+                ),
+            ))
+
+    return findings

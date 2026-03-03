@@ -681,6 +681,11 @@ def estimate_cost(total_chars: int) -> float:
     )
 
 
+# ─── Focused analysis (v0.8.0) ───────────────────────────────────────
+# The FOCUSED_ANALYZE_SYSTEM_PROMPT lives in llm_focus.py to keep prompts
+# co-located with the focus area logic. Import it when needed:
+#   from .llm_focus import FOCUSED_ANALYZE_SYSTEM_PROMPT
+
 # ─── Cross-file analysis prompts ─────────────────────────────────────
 
 ANALYZE_SYSTEM_PROMPT = """\

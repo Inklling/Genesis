@@ -202,7 +202,7 @@ class TestFixVerification:
         from wiz.fixer import verify_fixes
 
         filepath = tmp_path / "test.py"
-        filepath.write_text("x = 1\ny = 2\n", encoding="utf-8")
+        filepath.write_text("x = 1\nprint(x)\n", encoding="utf-8")
 
         pre_findings = [Finding(
             file=str(filepath), line=1, severity=Severity.WARNING,

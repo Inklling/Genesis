@@ -655,6 +655,89 @@ def cmd_hook(args):
         return 1
 
 
+def cmd_explain(args):
+    """Explain a code file in beginner-friendly language."""
+    filepath = Path(args.file).resolve()
+    if not filepath.is_file():
+        print(f"Error: '{args.file}' is not a file", file=sys.stderr)
+        return 1
+
+    lang = detect_language(filepath)
+    if not lang:
+        print(f"Error: unsupported file type '{filepath.suffix}'", file=sys.stderr)
+        return 1
+
+    try:
+        content = filepath.read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        print(f"Error reading file: {e}", file=sys.stderr)
+        return 1
+
+    output_format = getattr(args, "output", "text")
+    deep = getattr(args, "deep", False)
+
+    # Static analysis for findings context
+    static_findings = analyze_file_static(str(filepath), content, lang)
+
+    # Extract semantics
+    from .ts_semantic import extract_semantics
+    semantics = extract_semantics(content, str(filepath), lang)
+
+    # Type inference
+    type_map = None
+    if semantics:
+        from .ts_lang_config import get_config
+        config = get_config(lang)
+        if config:
+            from .ts_types import infer_types
+            source_bytes = content.encode("utf-8")
+            type_map = infer_types(semantics, source_bytes, config)
+
+    # Generate explanation
+    from .ts_explain import explain_file
+    explanation = explain_file(
+        content, str(filepath), lang,
+        semantics=semantics,
+        findings=static_findings,
+        type_map=type_map,
+    )
+
+    if output_format == "json":
+        rpt.print_explain_json(explanation)
+    else:
+        rpt.print_explanation(explanation)
+
+    # Deep mode: enhance with LLM
+    if deep:
+        try:
+            api_key = get_api_key()
+            if not api_key:
+                print("\n  --deep requires ANTHROPIC_API_KEY. Showing offline analysis only.", file=sys.stderr)
+            else:
+                from .llm import explain_file_llm, CostTracker
+                tracker = CostTracker()
+                llm_result, tracker = explain_file_llm(
+                    content, str(filepath), lang,
+                    static_findings=static_findings,
+                    cost_tracker=tracker,
+                )
+                if llm_result and output_format != "json":
+                    print(f"\n{'=' * 70}")
+                    print("  Deep Analysis (LLM-powered)")
+                    print(f"{'=' * 70}\n")
+                    if isinstance(llm_result, dict):
+                        for key, value in llm_result.items():
+                            if value:
+                                print(f"  {key}:")
+                                print(f"    {value}\n")
+                    print(f"  Cost: ${tracker.total_cost:.4f}")
+        except Exception as e:
+            if output_format != "json":
+                print(f"\n  LLM analysis unavailable: {e}", file=sys.stderr)
+
+    return 0
+
+
 def cmd_setup(args):
     """Check environment setup."""
     api_key_set = get_api_key() is not None
@@ -750,6 +833,15 @@ def main():
                            help="Graph + metrics only, no API key needed (free)")
     p_analyze.add_argument("--lang", help="Filter by language (e.g., python)")
     p_analyze.set_defaults(func=cmd_analyze)
+
+    # explain
+    p_explain = subparsers.add_parser("explain", help="Explain a code file (beginner-friendly tutorial)")
+    p_explain.add_argument("file", help="File to explain")
+    p_explain.add_argument("--deep", action="store_true",
+                           help="Use LLM for richer explanations (costs money)")
+    p_explain.add_argument("--output", choices=["text", "json"], default="text",
+                           help="Output format (default: text)")
+    p_explain.set_defaults(func=cmd_explain)
 
     # report
     p_report = subparsers.add_parser("report", help="Show latest scan report")

@@ -442,6 +442,116 @@ def _detect_cycles(graph: DepGraph) -> list[tuple[str, ...]]:
     return cycles
 
 
+
+# ─── Call graph data structures (v0.8.0) ──────────────────────────────
+
+@dataclass
+class FunctionNode:
+    """A function in the call graph."""
+    name: str
+    qualified_name: str
+    file: str
+    line: int
+    params: list[str]
+    has_varargs: bool = False
+    callers: set[str] = field(default_factory=set)   # qualified names
+    callees: set[str] = field(default_factory=set)    # qualified names
+
+
+@dataclass
+class CallGraph:
+    """Function-level dependency graph."""
+    functions: dict[str, FunctionNode] = field(default_factory=dict)  # qualified_name -> node
+    unresolved_calls: list[tuple[str, str, int]] = field(default_factory=list)  # (caller, call_name, line)
+
+
+def build_call_graph(
+    dep_graph: DepGraph,
+    semantics_by_file: dict,
+) -> CallGraph:
+    """Build a call graph from extracted semantics across all files.
+
+    Args:
+        dep_graph: File-level dependency graph (for cross-file resolution).
+        semantics_by_file: dict of rel_path -> FileSemantics.
+
+    Returns:
+        CallGraph with resolved function calls.
+    """
+    cg = CallGraph()
+
+    # 1. Register all function definitions
+    for rel_path, sem in semantics_by_file.items():
+        for fdef in sem.function_defs:
+            qname = f"{rel_path}:{fdef.qualified_name}"
+            cg.functions[qname] = FunctionNode(
+                name=fdef.name,
+                qualified_name=qname,
+                file=rel_path,
+                line=fdef.line,
+                params=fdef.params,
+                has_varargs=fdef.has_varargs,
+            )
+
+    # 2. Build lookup: simple name -> list of qualified names
+    name_to_qnames: dict[str, list[str]] = {}
+    for qname, fnode in cg.functions.items():
+        name_to_qnames.setdefault(fnode.name, []).append(qname)
+
+    # 3. Resolve calls
+    for rel_path, sem in semantics_by_file.items():
+        for call in sem.function_calls:
+            caller_qnames = []
+            # Find which function this call is inside
+            for fdef in sem.function_defs:
+                if fdef.line <= call.line <= fdef.end_line:
+                    caller_qnames.append(f"{rel_path}:{fdef.qualified_name}")
+
+            if not caller_qnames:
+                caller_qname = f"{rel_path}:<module>"
+            else:
+                # Pick innermost (last match by line range)
+                caller_qname = caller_qnames[-1]
+
+            # Resolve callee: try same-file first
+            call_name = call.name
+            resolved = False
+
+            # Same-file resolution
+            same_file_candidates = [
+                qn for qn in name_to_qnames.get(call_name, [])
+                if qn.startswith(f"{rel_path}:")
+            ]
+            if same_file_candidates:
+                for target_qname in same_file_candidates:
+                    if caller_qname in cg.functions:
+                        cg.functions[caller_qname].callees.add(target_qname)
+                    if target_qname in cg.functions:
+                        cg.functions[target_qname].callers.add(caller_qname)
+                resolved = True
+
+            # Cross-file resolution via dep graph imports
+            if not resolved:
+                deps = dep_graph.nodes.get(rel_path)
+                if deps:
+                    for imp_file in deps.imports:
+                        cross_candidates = [
+                            qn for qn in name_to_qnames.get(call_name, [])
+                            if qn.startswith(f"{imp_file}:")
+                        ]
+                        for target_qname in cross_candidates:
+                            if caller_qname in cg.functions:
+                                cg.functions[caller_qname].callees.add(target_qname)
+                            if target_qname in cg.functions:
+                                cg.functions[target_qname].callers.add(caller_qname)
+                            resolved = True
+
+            if not resolved and call_name:
+                cg.unresolved_calls.append((caller_qname, call_name, call.line))
+
+    return cg
+
+
 def compute_metrics(graph: DepGraph) -> GraphMetrics:
     """Compute summary metrics for a dependency graph."""
     metrics = GraphMetrics()

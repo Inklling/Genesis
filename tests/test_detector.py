@@ -371,10 +371,10 @@ def test_analyze_file_static_python(sample_python_code):
 def test_analyze_file_static_javascript(sample_javascript_code):
     """Test full static analysis on JavaScript code."""
     findings = analyze_file_static("test.js", sample_javascript_code, "javascript")
-    
-    # JavaScript only has regex checks, no AST
-    assert all(f.source == Source.STATIC for f in findings)
-    
+
+    # JavaScript has regex + tree-sitter AST checks (including semantic v0.8.0)
+    assert all(f.source in (Source.STATIC, Source.AST) for f in findings)
+
     rules = {f.rule for f in findings}
     assert "var-usage" in rules
     assert "console-log" in rules

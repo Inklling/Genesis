@@ -66,12 +66,20 @@ python -m wiz scan . --output sarif > report.sarif  # SARIF for GitHub Code Scan
 python -m wiz scan . --baseline latest           # Compare against latest report
 python -m wiz scan . --baseline path/to/baseline.json  # Compare against specific report
 
+# Project analysis (cross-file issues)
+python -m wiz analyze <directory>                # Full analysis (graph + LLM)
+python -m wiz analyze <directory> --no-llm       # Dependency graph only (free)
+python -m wiz analyze <directory> --output json  # JSON output for CI/CD
+python -m wiz analyze <directory> --depth 3      # Deeper dependency traversal
+
 # Debug specific file
 python -m wiz debug <file>
 python -m wiz debug <file> --error "error message"
+python -m wiz debug <file> --context auto              # Auto-discover related files
 
 # Optimize file
 python -m wiz optimize <file>
+python -m wiz optimize <file> --context auto           # With dependency context
 
 # View reports
 python -m wiz report                   # Show latest scan
@@ -275,22 +283,36 @@ pytest tests --cov=wiz --cov-report=html
 ```
 Genesis/
 ├── wiz/                    # Main package
-│   ├── __main__.py        # CLI entry point
+│   ├── __main__.py        # CLI entry point (scan, debug, optimize, analyze)
 │   ├── analyzer.py        # Scan orchestration
 │   ├── detector.py        # Static analysis engine
 │   ├── languages.py       # Pattern rules (50+ rules)
 │   ├── chunker.py         # File splitting for LLM
 │   ├── llm.py             # Claude API integration
+│   ├── depgraph.py        # Dependency graph engine (import resolution, cycle detection)
+│   ├── project.py         # Project-level cross-file analysis
 │   ├── storage.py         # Caching & reports
-│   ├── report.py          # Output formatting
-│   └── config.py          # Data structures
-├── tests/                 # Test suite (120+ tests)
+│   ├── report.py          # Output formatting (ANSI, JSON, SARIF)
+│   └── config.py          # Data structures & enums
+├── tests/                 # Test suite (275 tests)
 └── README.md             # This file
 ```
 
 ## Version History
 
-### v0.3.0 (Current)
+### v0.4.0 (Current)
+- ✅ **Project-level cross-file analysis** (`wiz analyze <dir>`)
+- ✅ Dependency graph engine — maps imports across Python, JS, and TS files
+- ✅ Cycle detection, dead module detection, hub file identification
+- ✅ Cross-file finding detection (interface mismatches, contract violations, dead exports)
+- ✅ Project synthesis with architecture health scoring (1-10)
+- ✅ Free `--no-llm` mode shows dependency graph without API key
+- ✅ Smart context selection — ranks files by importance, extracts signatures for large files
+- ✅ Enhanced `--context auto` — uses dependency graph for transitive deps (all languages)
+- ✅ `--context` flag added to `optimize` command
+- ✅ 275 comprehensive tests (up from 181)
+
+### v0.3.0
 - ✅ Baseline/diff mode for CI/CD (`--baseline` flag)
 - ✅ Config file support (`.wiz.toml`)
 - ✅ SARIF output format for GitHub Code Scanning
@@ -315,7 +337,6 @@ Genesis/
 
 ## Roadmap
 
-- [ ] Deep scan caching (respect file hash cache)
 - [ ] Parallel deep scanning
 - [ ] Custom rule definitions
 - [ ] Auto-fix capabilities
