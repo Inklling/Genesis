@@ -1,5 +1,7 @@
 """Tests for storage module - caching and report persistence."""
 
+import os
+import sys
 import pytest
 import json
 from pathlib import Path
@@ -379,3 +381,25 @@ def test_load_baseline_report_latest_nonexistent():
 # - update_cache_entry()
 # These are confirmed to be unused after the analyzer.py refactor.
 # They should be removed as suggested in the handoff notes.
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix permissions test")
+def test_ensure_dirs_sets_permissions_unix(temp_dir):
+    """Test that ensure_dirs sets 0o700 permissions on Unix."""
+    from wiz import storage
+
+    original_storage = storage.STORAGE_DIR
+    original_reports = storage.REPORTS_DIR
+
+    storage.STORAGE_DIR = temp_dir / "secure_storage"
+    storage.REPORTS_DIR = temp_dir / "secure_storage" / "reports"
+
+    ensure_dirs()
+
+    storage_mode = oct(storage.STORAGE_DIR.stat().st_mode & 0o777)
+    reports_mode = oct(storage.REPORTS_DIR.stat().st_mode & 0o777)
+    assert storage_mode == "0o700", f"STORAGE_DIR mode is {storage_mode}"
+    assert reports_mode == "0o700", f"REPORTS_DIR mode is {reports_mode}"
+
+    storage.STORAGE_DIR = original_storage
+    storage.REPORTS_DIR = original_reports

@@ -67,7 +67,17 @@ SKIP_FILES = {
     "poetry.lock", "composer.lock", "Cargo.lock", "Gemfile.lock",
 }
 
+SENSITIVE_FILE_PATTERNS = [
+    ".env", ".env.local", ".env.development", ".env.production",
+    ".env.staging", ".env.test",
+    "*.pem", "*.key", "*.p12", "*.pfx", "*.jks", "*.keystore",
+    "secrets.json", "credentials.json", "service-account.json",
+    ".netrc", ".npmrc", "id_rsa", "id_ed25519", "id_ecdsa",
+]
+
 MAX_FILE_SIZE = 1_000_000  # 1MB — skip binary/huge files
+
+REDACT_SNIPPET_RULES = {"hardcoded-secret", "aws-credentials"}
 
 
 class Confidence(Enum):
@@ -90,6 +100,7 @@ class Finding:
     confidence: Optional[Confidence] = None  # LLM findings only
 
     def to_dict(self) -> dict:
+        snippet = "[REDACTED]" if self.rule in REDACT_SNIPPET_RULES else self.snippet
         d = {
             "file": self.file,
             "line": self.line,
@@ -99,7 +110,7 @@ class Finding:
             "rule": self.rule,
             "message": self.message,
             "suggestion": self.suggestion,
-            "snippet": self.snippet,
+            "snippet": snippet,
         }
         if self.confidence is not None:
             d["confidence"] = self.confidence.value
@@ -262,10 +273,11 @@ class Fix:
     fixed_code: str          # replacement
     explanation: str          # what changed and why
     source: FixSource
+    end_line: Optional[int] = None  # last line of range (inclusive), None = single line
     status: FixStatus = FixStatus.PENDING
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "file": self.file,
             "line": self.line,
             "rule": self.rule,
@@ -275,6 +287,9 @@ class Fix:
             "source": self.source.value,
             "status": self.status.value,
         }
+        if self.end_line is not None:
+            d["end_line"] = self.end_line
+        return d
 
 
 @dataclass
@@ -453,6 +468,29 @@ def load_project_config(root: Path) -> dict:
 CustomRule = tuple
 
 
+def _is_safe_regex(pattern_str: str) -> bool:
+    """Check if a regex pattern is safe from ReDoS attacks.
+
+    Rejects nested quantifiers (e.g., (a+)+) and test-runs the compiled
+    pattern against a long string to catch catastrophic backtracking.
+    Returns True for patterns that are safe (or merely invalid — invalid
+    patterns are handled separately by re.compile error handling).
+    """
+    # Reject nested quantifiers: quantifier immediately after a group with a quantifier
+    if re.search(r'[+*?}\)][+*?{]|\([^)]*[+*?{][^)]*\)[+*?{]', pattern_str):
+        return False
+    # Test-run: compile and match against a 1000-char string
+    try:
+        compiled = re.compile(pattern_str)
+        compiled.search("a" * 1000)
+    except re.error:
+        # Invalid regex — let the caller's re.compile() handle the error message
+        return True
+    except RecursionError:
+        return False
+    return True
+
+
 def compile_custom_rules(config: dict) -> list[CustomRule]:
     """Compile custom rules from .wiz.toml config into regex tuples.
 
@@ -496,6 +534,12 @@ def compile_custom_rules(config: dict) -> list[CustomRule]:
 
         if not pattern_str or not name or not message:
             print(f"  [config] Skipping custom rule #{i}: missing pattern, name, or message",
+                  file=_sys.stderr)
+            continue
+
+        # ReDoS safety check
+        if not _is_safe_regex(pattern_str):
+            print(f"  [config] Skipping custom rule '{name}': potentially unsafe regex (ReDoS risk)",
                   file=_sys.stderr)
             continue
 

@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import os
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -14,6 +16,10 @@ def ensure_dirs():
     """Create storage directories if they don't exist."""
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    # Restrict permissions on Unix (owner-only access)
+    if sys.platform != "win32":
+        os.chmod(STORAGE_DIR, 0o700)
+        os.chmod(REPORTS_DIR, 0o700)
 
 
 def file_hash(filepath: str) -> str:

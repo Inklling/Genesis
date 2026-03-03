@@ -16,6 +16,30 @@ SEVERITY_MAP = {"critical": Severity.CRITICAL, "warning": Severity.WARNING, "inf
 CONFIDENCE_MAP = {"high": Confidence.HIGH, "medium": Confidence.MEDIUM, "low": Confidence.LOW}
 
 
+def _confirm_llm_usage(args) -> bool:
+    """Confirm that the user consents to sending code to the Anthropic API.
+
+    Returns True if the user accepts (or --accept-remote is set).
+    Returns False if declined or non-interactive without --accept-remote.
+    """
+    if getattr(args, "accept_remote", False):
+        return True
+    if not sys.stdin.isatty():
+        print("Error: LLM features send code to the Anthropic API. "
+              "Use --accept-remote to allow this in non-interactive mode.",
+              file=sys.stderr)
+        return False
+    print("Warning: This command will send code snippets to the Anthropic API for analysis.")
+    try:
+        response = input("Continue? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("\nError: No input available. "
+              "Use --accept-remote to allow LLM usage in non-interactive mode.",
+              file=sys.stderr)
+        return False
+    return response in ("y", "yes")
+
+
 def cmd_scan(args):
     """Run a code scan (quick or deep)."""
     root = Path(args.path).resolve()
@@ -39,6 +63,10 @@ def cmd_scan(args):
     is_json = output_format == "json"
 
     diff_base = getattr(args, "diff", None)
+
+    # LLM confirmation for deep scan
+    if args.deep and not _confirm_llm_usage(args):
+        return 1
 
     try:
         if diff_base is not None:
@@ -292,6 +320,9 @@ def cmd_debug(args):
         print(f"Error: unsupported file type '{filepath.suffix}'", file=sys.stderr)
         return 1
 
+    if not _confirm_llm_usage(args):
+        return 1
+
     try:
         content = filepath.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
@@ -348,6 +379,9 @@ def cmd_optimize(args):
     lang = detect_language(filepath)
     if not lang:
         print(f"Error: unsupported file type '{filepath.suffix}'", file=sys.stderr)
+        return 1
+
+    if not _confirm_llm_usage(args):
         return 1
 
     try:
@@ -407,6 +441,10 @@ def cmd_fix(args):
 
     dry_run = not getattr(args, "apply", False)
     use_llm = getattr(args, "llm", False)
+
+    if use_llm and not _confirm_llm_usage(args):
+        return 1
+
     create_backup = not getattr(args, "no_backup", False)
     verify = not getattr(args, "no_verify", False)
     output_format = getattr(args, "output", "text")
@@ -541,6 +579,9 @@ def cmd_analyze(args):
     output_format = getattr(args, "output", "text")
     use_llm = not getattr(args, "no_llm", False)
 
+    if use_llm and not _confirm_llm_usage(args):
+        return 1
+
     if output_format != "json":
         mode = "full (graph + LLM)" if use_llm else "graph only (no LLM)"
         print(f"Analyzing project {root} [{mode}] ...\n")
@@ -670,6 +711,9 @@ def cmd_explain(args):
     output_format = getattr(args, "output", "text")
     deep = getattr(args, "deep", False)
 
+    if deep and not _confirm_llm_usage(args):
+        return 1
+
     # Static analysis for findings context
     static_findings = analyze_file_static(str(filepath), content, lang)
 
@@ -774,6 +818,8 @@ def main():
     p_scan.add_argument("--baseline", help="Compare against baseline (use 'latest' or report path)")
     p_scan.add_argument("--workers", type=int, default=None, metavar="N",
                          help="Number of parallel workers for quick scan (default: 4 or from .wiz.toml, use 1 for sequential)")
+    p_scan.add_argument("--accept-remote", action="store_true",
+                         help="Skip LLM data-sharing confirmation (for CI/CD)")
     p_scan.set_defaults(func=cmd_scan)
 
     # debug
@@ -784,6 +830,8 @@ def main():
                          help="Related files for multi-file debugging: comma-separated paths or 'auto' (Python only)")
     p_debug.add_argument("--output", choices=["text", "json"], default="text",
                          help="Output format (default: text)")
+    p_debug.add_argument("--accept-remote", action="store_true",
+                         help="Skip LLM data-sharing confirmation (for CI/CD)")
     p_debug.set_defaults(func=cmd_debug)
 
     # optimize
@@ -793,6 +841,8 @@ def main():
                        help="Related files for context: comma-separated paths or 'auto'")
     p_opt.add_argument("--output", choices=["text", "json"], default="text",
                        help="Output format (default: text)")
+    p_opt.add_argument("--accept-remote", action="store_true",
+                       help="Skip LLM data-sharing confirmation (for CI/CD)")
     p_opt.set_defaults(func=cmd_optimize)
 
     # fix
@@ -803,7 +853,7 @@ def main():
     p_fix.add_argument("--llm", action="store_true",
                         help="Include LLM-generated fixes (costs money)")
     p_fix.add_argument("--no-backup", action="store_true",
-                        help="Skip creating .wiz.bak backup files")
+                        help="Skip creating .wiz.bak backup files (backups accumulate and are not auto-cleaned)")
     p_fix.add_argument("--no-verify", action="store_true",
                         help="Skip re-scanning file after applying fixes")
     p_fix.add_argument("--rules",
@@ -813,6 +863,8 @@ def main():
                         help="Only fix issues at this severity or above")
     p_fix.add_argument("--output", choices=["text", "json"], default="text",
                         help="Output format (default: text)")
+    p_fix.add_argument("--accept-remote", action="store_true",
+                        help="Skip LLM data-sharing confirmation (for CI/CD)")
     p_fix.set_defaults(func=cmd_fix)
 
     # analyze
@@ -825,6 +877,8 @@ def main():
     p_analyze.add_argument("--no-llm", action="store_true",
                            help="Graph + metrics only, no API key needed (free)")
     p_analyze.add_argument("--lang", help="Filter by language (e.g., python)")
+    p_analyze.add_argument("--accept-remote", action="store_true",
+                           help="Skip LLM data-sharing confirmation (for CI/CD)")
     p_analyze.set_defaults(func=cmd_analyze)
 
     # explain
@@ -834,6 +888,8 @@ def main():
                            help="Use LLM for richer explanations (costs money)")
     p_explain.add_argument("--output", choices=["text", "json"], default="text",
                            help="Output format (default: text)")
+    p_explain.add_argument("--accept-remote", action="store_true",
+                           help="Skip LLM data-sharing confirmation (for CI/CD)")
     p_explain.set_defaults(func=cmd_explain)
 
     # report

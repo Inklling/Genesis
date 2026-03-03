@@ -1,5 +1,7 @@
 """Tests for analyzer module - file collection and scanning."""
 
+import os
+import sys
 import pytest
 from pathlib import Path
 from wiz.analyzer import (
@@ -485,3 +487,56 @@ class TestDiffScanCLI:
         assert result.returncode in (0, 2)
         data = json_mod.loads(stdout)
         assert data["mode"] == "diff"
+
+
+# ─── Symlink protection tests ────────────────────────────────────────
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Symlinks require special privileges on Windows")
+def test_collect_files_skips_symlinks(temp_dir):
+    """Test that symlinked files are skipped during collection."""
+    # Create a real file
+    (temp_dir / "real.py").write_text("x = 1\n")
+    # Create a symlink to a file outside the project
+    target = temp_dir.parent / "outside_target.py"
+    target.write_text("secret = 'nope'\n")
+    link = temp_dir / "link.py"
+    link.symlink_to(target)
+
+    files, skipped = collect_files(temp_dir)
+
+    file_names = [f.name for f in files]
+    assert "real.py" in file_names
+    assert "link.py" not in file_names
+    assert skipped >= 1
+
+    # Cleanup
+    target.unlink()
+
+
+# ─── Sensitive file exclusion tests ──────────────────────────────────
+
+
+def test_should_skip_sensitive_files(temp_dir):
+    """Test that sensitive file patterns are correctly identified for skipping."""
+    sensitive_names = [".env", "secrets.json", "credentials.json", "id_rsa"]
+    for name in sensitive_names:
+        f = temp_dir / name
+        f.write_text("sensitive data")
+        assert should_skip_file(f), f"{name} should be skipped"
+
+
+def test_collect_files_excludes_sensitive(temp_dir):
+    """Test that collect_files excludes sensitive files."""
+    (temp_dir / "main.py").write_text("x = 1\n")
+    (temp_dir / ".env").write_text("SECRET=abc\n")
+    (temp_dir / "secrets.json").write_text('{"key": "value"}\n')
+    # .pem wouldn't be collected anyway (wrong extension), but test the pattern
+    (temp_dir / "server.key").write_text("-----BEGIN RSA PRIVATE KEY-----\n")
+
+    files, skipped = collect_files(temp_dir)
+    file_names = [f.name for f in files]
+    assert "main.py" in file_names
+    assert ".env" not in file_names
+    assert "secrets.json" not in file_names
+    assert "server.key" not in file_names

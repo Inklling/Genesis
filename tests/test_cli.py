@@ -194,3 +194,27 @@ def test_cli_analyze_help():
     assert "--depth" in out
     assert "--no-llm" in out
     assert "--output" in out
+
+
+# ─── LLM data boundary tests ─────────────────────────────────────────
+
+
+def test_llm_requires_remote_confirmation_in_ci(temp_dir):
+    """Test that LLM commands fail in non-interactive (CI) mode without --accept-remote."""
+    (temp_dir / "test.py").write_text("x = 1\n")
+    # debug is always LLM — pipe stdin to make it non-interactive
+    cmd = [sys.executable, "-m", "wiz", "debug", str(temp_dir / "test.py")]
+    result = subprocess.run(cmd, capture_output=True, timeout=10,
+                            stdin=subprocess.DEVNULL)
+    err = result.stderr.decode("utf-8", errors="replace")
+    assert result.returncode == 1
+    assert "--accept-remote" in err
+
+
+def test_accept_remote_skips_prompt(temp_dir):
+    """Test that --accept-remote bypasses the LLM confirmation prompt."""
+    (temp_dir / "test.py").write_text("x = 1\n")
+    # With --accept-remote, should proceed past the confirmation (may fail for other reasons like no API key)
+    rc, out, err = _run_wiz("debug", str(temp_dir / "test.py"), "--accept-remote")
+    # Should NOT fail with the "use --accept-remote" error
+    assert "--accept-remote" not in err

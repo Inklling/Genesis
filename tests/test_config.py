@@ -8,6 +8,7 @@ from wiz.config import (
     Severity, Category, Source,
     get_api_key, load_ignore_patterns,
     LANGUAGE_EXTENSIONS,
+    _is_safe_regex, compile_custom_rules,
 )
 
 
@@ -317,6 +318,56 @@ def test_load_ignore_patterns_whitespace_handling(temp_dir):
     assert len(patterns) == 2
 
 
+def test_finding_to_dict_redacts_secret_snippet():
+    """Test that Finding.to_dict() redacts snippets for secret-related rules."""
+    finding = Finding(
+        file="test.py",
+        line=5,
+        severity=Severity.CRITICAL,
+        category=Category.SECURITY,
+        source=Source.STATIC,
+        rule="hardcoded-secret",
+        message="Hardcoded secret detected",
+        snippet='password = "super_secret_123"',
+    )
+    result = finding.to_dict()
+    assert result["snippet"] == "[REDACTED]"
+    # Internal snippet is still available
+    assert finding.snippet == 'password = "super_secret_123"'
+
+
+def test_finding_to_dict_redacts_aws_credentials():
+    """Test that aws-credentials rule snippets are also redacted."""
+    finding = Finding(
+        file="config.py",
+        line=10,
+        severity=Severity.CRITICAL,
+        category=Category.SECURITY,
+        source=Source.STATIC,
+        rule="aws-credentials",
+        message="AWS credentials found",
+        snippet="AKIAIOSFODNN7EXAMPLE",
+    )
+    result = finding.to_dict()
+    assert result["snippet"] == "[REDACTED]"
+
+
+def test_finding_to_dict_preserves_normal_snippet():
+    """Test that non-secret findings keep their snippet intact."""
+    finding = Finding(
+        file="test.py",
+        line=1,
+        severity=Severity.WARNING,
+        category=Category.BUG,
+        source=Source.STATIC,
+        rule="bare-except",
+        message="Bare except clause",
+        snippet="except:\n    pass",
+    )
+    result = finding.to_dict()
+    assert result["snippet"] == "except:\n    pass"
+
+
 def test_scan_report_default_values():
     """Test ScanReport default field values."""
     report = ScanReport(
@@ -333,3 +384,36 @@ def test_scan_report_default_values():
     assert report.file_analyses == []
     assert report.llm_cost_usd == 0.0
     assert report.timestamp == ""
+
+
+# ─── ReDoS protection tests ──────────────────────────────────────────
+
+
+def test_redos_pattern_rejected():
+    """Test that nested-quantifier patterns are rejected as ReDoS risk."""
+    # Classic ReDoS: (a+)+ causes catastrophic backtracking
+    assert _is_safe_regex("(a+)+") is False
+    # Nested quantifier with * after group
+    assert _is_safe_regex("(x*)*") is False
+
+
+def test_safe_pattern_accepted():
+    """Test that normal regex patterns pass the safety check."""
+    assert _is_safe_regex(r"TODO|FIXME|HACK") is True
+    assert _is_safe_regex(r"password\s*=\s*['\"]") is True
+    assert _is_safe_regex(r"\beval\s*\(") is True
+
+
+def test_redos_rejected_in_compile_custom_rules(capsys):
+    """Test that compile_custom_rules skips ReDoS-prone rules."""
+    config = {
+        "rules": [{
+            "pattern": "(a+)+",
+            "name": "redos-rule",
+            "message": "This is unsafe",
+        }]
+    }
+    rules = compile_custom_rules(config)
+    assert len(rules) == 0
+    captured = capsys.readouterr()
+    assert "ReDoS" in captured.err

@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from .config import (
     Finding, FileAnalysis, ScanReport, Severity, Confidence, Category, Source,
     LANGUAGE_EXTENSIONS, SKIP_DIRS, SKIP_FILES, MAX_FILE_SIZE,
+    SENSITIVE_FILE_PATTERNS,
     load_ignore_patterns,
 )
 from .detector import analyze_file_static
@@ -34,6 +35,9 @@ def should_skip_dir(dirname: str) -> bool:
 def should_skip_file(filepath: Path) -> bool:
     """Check if file should be skipped."""
     if filepath.name in SKIP_FILES:
+        return True
+    # Block sensitive files (secrets, keys, credentials)
+    if any(fnmatch.fnmatch(filepath.name, pat) for pat in SENSITIVE_FILE_PATTERNS):
         return True
     if filepath.suffix.lower() not in LANGUAGE_EXTENSIONS:
         return True
@@ -69,9 +73,21 @@ def collect_files(
             return [root], 0
         return [], 1
 
+    resolved_root = root.resolve()
+
     for item in sorted(root.rglob("*")):
         # Skip directories
         if item.is_dir():
+            continue
+        # Skip symlinks (prevents reading files outside project tree)
+        if item.is_symlink():
+            skipped += 1
+            continue
+        # Verify resolved path stays under project root (traversal protection)
+        try:
+            item.resolve().relative_to(resolved_root)
+        except ValueError:
+            skipped += 1
             continue
         # Check if any parent dir should be skipped
         if any(should_skip_dir(p.name) for p in item.relative_to(root).parents):

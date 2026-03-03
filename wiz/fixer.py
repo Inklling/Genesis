@@ -239,7 +239,7 @@ def _fix_open_without_with(line: str, finding: Finding, content: str) -> Optiona
         return Fix(
             file=finding.file, line=finding.line, rule=finding.rule,
             original_code=line, fixed_code=new_code,
-            explanation=f"Wrapped open() in 'with' statement for automatic cleanup",
+            explanation="Wrapped open() in 'with' statement for automatic cleanup",
             source=FixSource.DETERMINISTIC,
         )
 
@@ -251,10 +251,147 @@ def _fix_open_without_with(line: str, finding: Finding, content: str) -> Optiona
             new_code += indent + "    " + bl.lstrip()
         else:
             new_code += bl
+
+    # Set end_line so apply_fixes blanks out the original body lines
+    last_body_line = finding.line + len(body_lines)
     return Fix(
         file=finding.file, line=finding.line, rule=finding.rule,
         original_code=line, fixed_code=new_code,
-        explanation=f"Wrapped open() in 'with' statement for automatic cleanup",
+        explanation="Wrapped open() in 'with' statement for automatic cleanup",
+        source=FixSource.DETERMINISTIC,
+        end_line=last_body_line,
+    )
+
+
+def _fix_yaml_unsafe(line: str, finding: Finding, content: str) -> Optional[Fix]:
+    """Replace yaml.load() with yaml.safe_load()."""
+    # Skip if SafeLoader or Loader= already present on this line
+    if "SafeLoader" in line or "Loader=" in line:
+        return None
+    new_line = re.sub(r'\byaml\.load\s*\(', 'yaml.safe_load(', line)
+    if new_line != line:
+        return Fix(
+            file=finding.file, line=finding.line, rule=finding.rule,
+            original_code=line, fixed_code=new_line,
+            explanation="Replaced yaml.load() with yaml.safe_load() to prevent arbitrary code execution",
+            source=FixSource.DETERMINISTIC,
+        )
+    return None
+
+
+def _fix_weak_hash(line: str, finding: Finding, content: str) -> Optional[Fix]:
+    """Replace hashlib.md5/sha1 with hashlib.sha256."""
+    # Skip if usedforsecurity=False is present (legitimate non-crypto use)
+    if "usedforsecurity=False" in line or "usedforsecurity = False" in line:
+        return None
+    new_line = re.sub(r'\bhashlib\.(?:md5|sha1)\s*\(', 'hashlib.sha256(', line)
+    if new_line != line:
+        return Fix(
+            file=finding.file, line=finding.line, rule=finding.rule,
+            original_code=line, fixed_code=new_line,
+            explanation="Replaced weak hash (MD5/SHA1) with SHA-256",
+            source=FixSource.DETERMINISTIC,
+        )
+    return None
+
+
+def _fix_unreachable_code(line: str, finding: Finding, content: str) -> Optional[Fix]:
+    """Delete a single unreachable line after return/raise/break/continue."""
+    stripped = line.strip()
+    # Only fix simple single-line statements, not block starters
+    if stripped.endswith(":") or not stripped:
+        return None
+    return Fix(
+        file=finding.file, line=finding.line, rule=finding.rule,
+        original_code=line, fixed_code="",
+        explanation=f"Removed unreachable code: {stripped}",
+        source=FixSource.DETERMINISTIC,
+    )
+
+
+def _fix_mutable_default(line: str, finding: Finding, content: str) -> Optional[Fix]:
+    """Replace mutable default argument with None + body guard."""
+    lines = content.splitlines(keepends=True)
+    line_idx = finding.line - 1
+    if line_idx < 0 or line_idx >= len(lines):
+        return None
+
+    # Collect the full function def (may span multiple lines with backslash or parens)
+    def_line = lines[line_idx]
+    m = re.match(r'^(\s*)(async\s+)?def\s+\w+\s*\(', def_line)
+    if not m:
+        return None
+    indent = m.group(1)
+
+    # Find the end of the def signature (line with closing `):`
+    sig_end = line_idx
+    sig_text = def_line
+    if ')' not in def_line or ':' not in def_line.split(')')[-1]:
+        for i in range(line_idx + 1, min(line_idx + 20, len(lines))):
+            sig_text += lines[i]
+            sig_end = i
+            if ')' in lines[i]:
+                break
+
+    # Find mutable defaults and replace them
+    # Match param=[] or param={} or param=set()
+    new_sig = sig_text
+    guards = []
+    for match in re.finditer(r'(\w+)\s*=\s*(\[\]|\{\}|set\(\))', sig_text):
+        param = match.group(1)
+        mutable = match.group(2)
+        new_sig = new_sig.replace(f"{param}={mutable}", f"{param}=None", 1)
+        new_sig = new_sig.replace(f"{param} = {mutable}", f"{param}=None", 1)
+        guards.append((param, mutable))
+
+    if not guards:
+        return None
+
+    # Build guard lines
+    body_indent = indent + "    "
+    guard_lines = ""
+    for param, mutable in guards:
+        guard_lines += f"{body_indent}if {param} is None:\n"
+        guard_lines += f"{body_indent}    {param} = {mutable}\n"
+
+    fixed_code = new_sig + guard_lines
+    return Fix(
+        file=finding.file, line=finding.line, rule=finding.rule,
+        original_code=def_line, fixed_code=fixed_code,
+        explanation="Replaced mutable default argument with None + guard clause",
+        source=FixSource.DETERMINISTIC,
+        end_line=sig_end + 1 if sig_end > line_idx else None,
+    )
+
+
+def _fix_exception_swallowed(line: str, finding: Finding, content: str) -> Optional[Fix]:
+    """Add TODO comment to bare except: pass blocks."""
+    lines = content.splitlines(keepends=True)
+    line_idx = finding.line - 1  # finding.line points to the except handler
+    if line_idx < 0 or line_idx >= len(lines):
+        return None
+
+    # Find the `pass` line in the except body (should be next non-empty line)
+    pass_idx = None
+    for i in range(line_idx + 1, min(line_idx + 5, len(lines))):
+        stripped = lines[i].strip()
+        if stripped == "pass":
+            pass_idx = i
+            break
+        if stripped and stripped != "pass":
+            break  # Body isn't just `pass`, skip
+
+    if pass_idx is None:
+        return None
+
+    # Replace pass with pass + TODO
+    pass_line = lines[pass_idx]
+    pass_indent = re.match(r'^(\s*)', pass_line).group(1)
+    new_pass = f"{pass_indent}pass  # TODO: handle this exception\n"
+    return Fix(
+        file=finding.file, line=pass_idx + 1, rule=finding.rule,
+        original_code=pass_line, fixed_code=new_pass,
+        explanation="Added TODO comment to silently swallowed exception",
         source=FixSource.DETERMINISTIC,
     )
 
@@ -271,6 +408,11 @@ DETERMINISTIC_FIXERS: dict[str, Callable] = {
     "fstring-no-expr": _fix_fstring_no_expr,
     "hardcoded-secret": _fix_hardcoded_secret,
     "open-without-with": _fix_open_without_with,
+    "yaml-unsafe": _fix_yaml_unsafe,
+    "weak-hash": _fix_weak_hash,
+    "unreachable-code": _fix_unreachable_code,
+    "mutable-default": _fix_mutable_default,
+    "exception-swallowed": _fix_exception_swallowed,
 }
 
 
@@ -343,7 +485,8 @@ def apply_fixes(
         return fixes
 
     try:
-        content = open(filepath, "r", encoding="utf-8", errors="replace").read()
+        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
     except OSError as e:
         for f in fixes:
             f.status = FixStatus.FAILED
@@ -358,7 +501,12 @@ def apply_fixes(
     occupied_lines: set[int] = set()
 
     for idx, fix in indexed_fixes:
-        if fix.line in occupied_lines:
+        # Determine the full line range this fix covers
+        start_line = fix.line
+        end_line = fix.end_line if fix.end_line is not None else fix.line
+        fix_range = set(range(start_line, end_line + 1))
+
+        if fix_range & occupied_lines:
             fix.status = FixStatus.SKIPPED
             continue
 
@@ -368,7 +516,7 @@ def apply_fixes(
             fix.status = FixStatus.FAILED
             continue
 
-        # For deletion fixes (empty fixed_code), remove the line
+        # For deletion fixes (empty fixed_code), remove the line(s)
         if fix.original_code and not fix.fixed_code:
             # Verify original matches
             actual = lines[line_idx]
@@ -376,9 +524,11 @@ def apply_fixes(
                 fix.status = FixStatus.FAILED
                 continue
             if not dry_run:
-                lines[line_idx] = ""  # Mark for removal
+                # Blank out all lines in the range
+                for li in range(line_idx, min(line_idx + (end_line - start_line + 1), len(lines))):
+                    lines[li] = ""
             fix.status = FixStatus.APPLIED
-            occupied_lines.add(fix.line)
+            occupied_lines.update(fix_range)
 
         elif fix.original_code and fix.fixed_code:
             # Replacement fix — verify original is present
@@ -387,13 +537,16 @@ def apply_fixes(
                 fix.status = FixStatus.FAILED
                 continue
             if not dry_run:
-                # Replace the line content
+                # Replace the first line with fixed_code
                 new_code = fix.fixed_code
                 if not new_code.endswith("\n") and actual.endswith("\n"):
                     new_code += "\n"
                 lines[line_idx] = new_code
+                # Blank out remaining lines in range (line+1..end_line)
+                for li in range(line_idx + 1, min(line_idx + (end_line - start_line + 1), len(lines))):
+                    lines[li] = ""
             fix.status = FixStatus.APPLIED
-            occupied_lines.add(fix.line)
+            occupied_lines.update(fix_range)
 
         else:
             fix.status = FixStatus.FAILED
