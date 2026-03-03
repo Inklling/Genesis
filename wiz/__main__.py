@@ -666,30 +666,20 @@ def cmd_cost(args):
 
 
 def cmd_hook(args):
-    """Install or uninstall wiz git hooks."""
-    from .hooks import (
-        install_hook, uninstall_hook,
-        install_post_merge_hook, uninstall_post_merge_hook,
-    )
+    """Install or uninstall wiz pre-commit hook."""
+    from .hooks import install_hook, uninstall_hook
 
     root = Path(".").resolve()
     action = args.hook_action
-    force = getattr(args, "force", False)
-    post_merge = getattr(args, "post_merge", False)
 
     try:
         if action == "install":
-            if post_merge:
-                msg = install_post_merge_hook(root, force=force)
-            else:
-                msg = install_hook(root, force=force)
+            force = getattr(args, "force", False)
+            msg = install_hook(root, force=force)
             print(msg)
             return 0
         elif action == "uninstall":
-            if post_merge:
-                msg = uninstall_post_merge_hook(root)
-            else:
-                msg = uninstall_hook(root)
+            msg = uninstall_hook(root)
             print(msg)
             return 0
         else:
@@ -913,11 +903,9 @@ def main():
     p_cost.set_defaults(func=cmd_cost)
 
     # hook
-    p_hook = subparsers.add_parser("hook", help="Manage git hooks")
+    p_hook = subparsers.add_parser("hook", help="Manage pre-commit hook")
     p_hook.add_argument("hook_action", choices=["install", "uninstall"],
-                         help="Install or uninstall wiz git hooks")
-    p_hook.add_argument("--post-merge", action="store_true",
-                         help="Target the post-merge hook (auto-checks COLLAB.md on pull)")
+                         help="Install or uninstall wiz pre-commit hook")
     p_hook.add_argument("--force", action="store_true",
                          help="Overwrite existing non-wiz hooks")
     p_hook.set_defaults(func=cmd_hook)
