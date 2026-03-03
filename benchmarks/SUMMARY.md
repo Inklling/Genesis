@@ -4,7 +4,49 @@
 **Wiz version:** 1.0.0
 **Repos tested:** Flask, FastAPI, Express.js
 
-## Overview
+## Results After FP Reduction Sprint
+
+| Repo | Language | Files | Before | After | Reduction | Critical |
+|------|----------|-------|--------|-------|-----------|----------|
+| Flask | Python | 24 | 373 | 300 | -73 (20%) | 2 -> 2 |
+| FastAPI | Python | 46 | 739 | 407 | -332 (45%) | 0 -> 0 |
+| Express | JavaScript | 153 | 2028 | 140 | -1888 (93%) | 105 -> 0 |
+| **Total** | | **223** | **3140** | **847** | **-2293 (73%)** | **107 -> 2** |
+
+### Per-Rule Impact
+
+**Fully eliminated (100% reduction):**
+- `var-usage`: 1699 -> 0 (removed from defaults, opt-in via .wiz.toml)
+- `path-traversal`: 103 -> 0 (require() excluded)
+- `console-log`: 37 -> 0 (skipped in test/example dirs)
+- `resource-leak`: 24 -> 0 (FastAPI; word-boundary matching)
+- `eval-usage`: 2 -> 0 (string literal suppression)
+
+**Significantly reduced:**
+- `unused-variable`: 384 -> 49 (87% reduction, class scope skip)
+- `insecure-http`: 48 -> 1 (98% reduction, test file skip)
+- `null-dereference`: 136 -> 93 (32% reduction, guard pattern recognition)
+- `possibly-uninitialized`: 36 -> 20 (44% reduction, param/loop-var skip)
+- `unused-import`: 176 -> 147 (16% reduction, re-export/future/TYPE_CHECKING)
+
+### Remaining Findings (847)
+
+The remaining findings break down into two categories:
+
+**Still need work (high FP likely):**
+- `unused-import` (147): re-export detection caught some but not all. Submodule imports (`import X.Y` used as `X.Y.foo()`) still missed.
+- `null-dereference` (93): Guard recognition improved but still misses some patterns (protocol-guaranteed init, `.get()` defaults).
+- `unused-variable` (49): Class-scope skip helped Pydantic/dataclass, but TypeVars and module-level API objects still flagged.
+- `possibly-uninitialized` (20): Param/loop-var fix helped but exhaustive if/else and walrus operator still not handled.
+
+**Likely legitimate or low-noise:**
+- `feature-envy` (101): New rule, needs separate validation.
+- `long-method` (26): Structural metric, not a FP question.
+- `too-many-args` (6): Structural metric.
+- `bare-except` (1): Confirmed TP.
+- `exec-usage`/`eval-usage` (2): Intentional but flagged correctly as potential risk.
+
+## Original Baseline (Pre-Fix)
 
 | Repo | Language | Files | Findings | Sampled | TP | FP | FP Rate |
 |------|----------|-------|----------|---------|----|----|---------|
