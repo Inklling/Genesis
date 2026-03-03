@@ -369,18 +369,14 @@ def test_python_weak_random():
 # JAVASCRIPT RULES
 # ───────────────────────────────────────────────────────────────────────────
 
-def test_javascript_var_usage():
-    """Test var keyword detection."""
+def test_javascript_var_usage_removed():
+    """Test that var-usage rule has been removed (it's a style opinion, not a bug).
+
+    Users who want it can add it as a custom rule via .wiz.toml.
+    """
     rules = get_rules_for_language("javascript")
-    pattern = next(r for r in rules if r[3] == "var-usage")[0]
-    
-    # Should match
-    assert pattern.search("var x = 5;")
-    assert pattern.search("var oldStyle = true;")
-    
-    # Should NOT match
-    assert not pattern.search("let x = 5;")
-    assert not pattern.search("const x = 5;")
+    rule_names = {r[3] for r in rules}
+    assert "var-usage" not in rule_names
 
 
 def test_javascript_loose_equality():

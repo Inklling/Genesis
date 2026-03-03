@@ -12,11 +12,25 @@ _SECURITY_CATEGORIES = {Category.SECURITY}
 # Rules that specifically target comments — never skip on comment lines
 _COMMENT_RULES = {"todo-marker"}
 
+# Rules to suppress in test/example files (high FP in non-production code)
+_SKIP_IN_TEST_FILES = {"insecure-http", "console-log"}
+_SKIP_IN_EXAMPLE_FILES = {"console-log"}
+
+# Path segments identifying test and example files
+_TEST_PATH_SEGMENTS = ("/test/", "/tests/", "test_", "_test.", "/spec/", "/specs/")
+_EXAMPLE_PATH_SEGMENTS = ("/examples/", "/example/")
+
 # Inline comment patterns per language family
 _INLINE_COMMENT_RE = {
     "hash": re.compile(r"""(?<!['"\\])#(?![!])"""),  # Python/Ruby/Bash style
     "slash": re.compile(r"""(?<!['"\\:])//"""),       # C-family style
 }
+
+# Regex to detect lines that are predominantly string content
+# Catches: var = 'javascript:eval(...)' and similar mid-line strings
+_STRING_CONTENT_RE = re.compile(
+    r"""['"][^'"]*(?:eval|exec)\s*\([^'"]*['"]"""  # eval/exec inside string literal
+)
 
 
 def _strip_inline_comment(line: str, language: str) -> str:
@@ -48,6 +62,18 @@ def run_regex_checks(content: str, filepath: str, language: str,
     """
     findings = []
     rules = get_rules_for_language(language)
+
+    # Detect test/example files for rule suppression
+    fp_lower = filepath.lower().replace("\\", "/")
+    is_test_file = any(seg in fp_lower for seg in _TEST_PATH_SEGMENTS)
+    is_example_file = any(seg in fp_lower for seg in _EXAMPLE_PATH_SEGMENTS)
+
+    # Rules to skip for this file based on path
+    skip_rules: set[str] = set()
+    if is_test_file:
+        skip_rules |= _SKIP_IN_TEST_FILES
+    if is_example_file:
+        skip_rules |= _SKIP_IN_EXAMPLE_FILES
 
     # Collect applicable custom rules (processed separately — match full line)
     applicable_custom_rules = []
@@ -135,8 +161,17 @@ def run_regex_checks(content: str, filepath: str, language: str,
             if is_comment and rule_name not in _COMMENT_RULES:
                 continue
 
+            # Skip rules suppressed for test/example files
+            if rule_name in skip_rules:
+                continue
+
             # String-only lines: skip non-security patterns (secrets DO live in strings)
             if is_string_line and category not in _SECURITY_CATEGORIES:
+                continue
+
+            # For eval-usage/exec-usage: also check if the match is inside a string
+            # literal mid-line (e.g. var = 'javascript:eval(...)' )
+            if rule_name in ("eval-usage", "exec-usage") and _STRING_CONTENT_RE.search(stripped):
                 continue
 
             # For non-security rules, strip inline comments before matching
@@ -219,19 +254,43 @@ def run_python_ast_checks(content: str, filepath: str) -> list[Finding]:
 
 
 def _check_imports(tree: ast.AST, filepath: str, findings: list[Finding]):
-    """Check for unused imports."""
+    """Check for unused imports.
+
+    Skips:
+    - `from __future__ import ...` (directives, not symbol imports)
+    - `import X as X` / `from Y import X as X` (explicit re-export pattern, PEP 484)
+    - Imports inside `if TYPE_CHECKING:` blocks
+    """
     imported_names = {}  # name -> line number
+    re_exported_names = set()  # names explicitly re-exported via `as X` identity alias
     used_names = set()
+
+    # Detect TYPE_CHECKING-guarded import lines
+    type_checking_lines = _find_type_checking_lines(tree)
 
     for node in ast.walk(tree):
         # Track imports
         if isinstance(node, ast.Import):
             for alias in node.names:
+                # Explicit re-export: `import X as X`
+                if alias.asname and alias.asname == alias.name:
+                    re_exported_names.add(alias.name)
+                    continue
                 name = alias.asname or alias.name
                 imported_names[name] = node.lineno
         elif isinstance(node, ast.ImportFrom):
+            # Skip __future__ imports entirely (directives, not symbols)
+            if node.module == "__future__":
+                continue
+            # Skip TYPE_CHECKING-guarded imports
+            if node.lineno in type_checking_lines:
+                continue
             for alias in node.names:
                 if alias.name == "*":
+                    continue
+                # Explicit re-export: `from X import Y as Y`
+                if alias.asname and alias.asname == alias.name:
+                    re_exported_names.add(alias.name)
                     continue
                 name = alias.asname or alias.name
                 imported_names[name] = node.lineno
@@ -250,6 +309,9 @@ def _check_imports(tree: ast.AST, filepath: str, findings: list[Finding]):
     for name, lineno in imported_names.items():
         if name.startswith("_"):  # Skip intentional underscore names
             continue
+        # Skip TYPE_CHECKING-guarded imports (for `import X` style too)
+        if lineno in type_checking_lines:
+            continue
         if name not in used_names:
             findings.append(Finding(
                 file=filepath,
@@ -261,6 +323,24 @@ def _check_imports(tree: ast.AST, filepath: str, findings: list[Finding]):
                 message=f"Import '{name}' is never used",
                 suggestion=f"Remove unused import '{name}'",
             ))
+
+
+def _find_type_checking_lines(tree: ast.AST) -> set[int]:
+    """Find line numbers of imports inside `if TYPE_CHECKING:` blocks."""
+    lines = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.If):
+            # Check for `if TYPE_CHECKING:` or `if typing.TYPE_CHECKING:`
+            test = node.test
+            is_type_checking = (
+                (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING")
+                or (isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING")
+            )
+            if is_type_checking:
+                for child in ast.walk(node):
+                    if isinstance(child, (ast.Import, ast.ImportFrom)):
+                        lines.add(child.lineno)
+    return lines
 
 
 def _check_functions(tree: ast.AST, filepath: str, findings: list[Finding]):

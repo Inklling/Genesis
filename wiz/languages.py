@@ -213,14 +213,9 @@ PYTHON_RULES: list[Rule] = _compile([
 # ─── JavaScript / TypeScript ─────────────────────────────────────────
 
 JAVASCRIPT_RULES: list[Rule] = _compile([
-    # var usage
-    (
-        r"\bvar\s+\w+",
-        Severity.WARNING, Category.STYLE,
-        "var-usage",
-        "'var' has function scoping — can cause unexpected behavior",
-        "Use 'let' or 'const' instead",
-    ),
+    # Note: var-usage rule removed — it's a style opinion, not a correctness issue.
+    # Projects using var intentionally (Express, CommonJS) get massive noise.
+    # Users who want it can add it as a custom rule via .wiz.toml.
     # == instead of ===
     (
         r"(?<![=!])={2}(?!=)",
@@ -327,9 +322,10 @@ RUST_RULES: list[Rule] = _compile([
 # ─── Security patterns (applied to all languages) ────────────────────
 
 SECURITY_RULES: list[Rule] = _compile([
-    # Path traversal
+    # Path traversal — excludes require() since require('../..') is standard
+    # Node.js module resolution, not user-controlled path construction
     (
-        r"""(?:open|read|write|include|require)\s*\([^)]*\.\./""",
+        r"""(?:open|read|write|include)\s*\([^)]*\.\./""",
         Severity.CRITICAL, Category.SECURITY,
         "path-traversal",
         "Possible path traversal attack with ../",

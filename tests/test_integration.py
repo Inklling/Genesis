@@ -114,7 +114,7 @@ def test_scan_javascript_quality(javascript_quality_dir):
         for f in fa.findings:
             all_rules.add(f.rule)
 
-    assert "var-usage" in all_rules
+    # var-usage rule was removed (style opinion, not correctness)
     assert "console-log" in all_rules
     assert "loose-equality" in all_rules
     assert "eval-usage" in all_rules
@@ -139,8 +139,7 @@ def test_scan_mixed_languages(mixed_language_dir):
 
     # Python issues
     assert "os-system" in all_rules
-    # JS issues
-    assert "var-usage" in all_rules
+    # JS issues (var-usage rule was removed)
     assert "document-write" in all_rules
     # Go issues
     assert "unchecked-error" in all_rules

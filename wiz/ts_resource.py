@@ -167,7 +167,10 @@ def check_resource_leaks(
 
             rhs = asgn.value_text
             for open_pat, close_pat, has_ctx_mgr, kind in config.resource_patterns:
-                if open_pat in rhs:
+                # Use word-boundary matching to avoid false positives:
+                # e.g. "open" should match "open(" but not "open_session()"
+                # or variable names containing "open" as a substring
+                if re.search(r'\b' + re.escape(open_pat) + r'\s*\(', rhs):
                     is_ctx = (
                         (has_ctx_mgr and asgn.line in context_managed_lines)
                         or asgn.name in finally_closed

@@ -22,6 +22,53 @@ from .ts_types import FileTypeMap, TypeInfo, InferredType
 
 # ─── Narrowing detection ─────────────────────────────────────────────
 
+# Pre-compiled guard patterns (avoid recompiling per line)
+_GUARD_PATTERNS = [
+    # Python: if x is not None:
+    re.compile(r'if\s+(\w+)\s+is\s+not\s+None\s*:'),
+    # Python: if x is not None and ...
+    re.compile(r'if\s+(\w+)\s+is\s+not\s+None\b'),
+    # Python: if x != None:
+    re.compile(r'if\s+(\w+)\s*!=\s*None\s*:'),
+    # Python truthiness: if x:
+    re.compile(r'if\s+(\w+)\s*:'),
+    # JS/TS/Java/C#: if (x !== null)
+    re.compile(r'if\s*\(\s*(\w+)\s*!==?\s*null\s*\)'),
+    # JS/TS/Java/C#: if (x != null)
+    re.compile(r'if\s*\(\s*(\w+)\s*!=\s*null\s*\)'),
+    # JS/TS: if (x)
+    re.compile(r'if\s*\(\s*(\w+)\s*\)'),
+]
+
+# Early-exit patterns: `if x is None: raise/return` eliminates None
+# on the continuation path (all lines after this block are guarded)
+_EARLY_EXIT_PATTERNS = [
+    # Python: if x is None: raise/return
+    re.compile(r'if\s+(\w+)\s+is\s+None\s*:'),
+    # Python: if not x:
+    re.compile(r'if\s+not\s+(\w+)\s*:'),
+    # JS/TS: if (x === null) / if (x == null)
+    re.compile(r'if\s*\(\s*(\w+)\s*===?\s*null\s*\)'),
+    # JS/TS: if (!x)
+    re.compile(r'if\s*\(\s*!\s*(\w+)\s*\)'),
+]
+
+# Assert patterns: `assert x is not None` guards everything after
+_ASSERT_PATTERNS = [
+    re.compile(r'assert\s+(\w+)\s+is\s+not\s+None'),
+    re.compile(r'assert\s+isinstance\s*\(\s*(\w+)\s*,'),
+    re.compile(r'assert\s+(\w+)\b'),
+]
+
+# Inline guard patterns: short-circuit and ternary on same line
+_INLINE_GUARD_RE = [
+    # x and x.attr (short-circuit)
+    re.compile(r'\b(\w+)\s+and\s+\1\.'),
+    # x if x else default (ternary)
+    re.compile(r'\b(\w+)\b.*\bif\s+\1\b.*\belse\b'),
+]
+
+
 def _find_guarded_lines(
     source_bytes: bytes,
     language: str,
@@ -30,22 +77,30 @@ def _find_guarded_lines(
 
     Returns {variable_name: {set of guarded line numbers}}.
 
-    Detects patterns like:
-        if x is not None:   (Python)
-        if x != None:       (Python)
-        if (x !== null)     (JS/TS)
-        if (x != null)      (JS/TS/Java/C#)
-        if x:               (Python truthiness check)
+    Detects patterns:
+    1. Block guards: `if x is not None:` / `if (x !== null)` / `if x:` —
+       all indented lines inside the block are guarded.
+    2. Early-exit guards: `if x is None: raise/return` — all lines AFTER
+       the block are guarded (None eliminated on continuation path).
+    3. Assert guards: `assert x is not None` / `assert isinstance(x, T)` —
+       all lines after the assert are guarded.
+    4. Inline guards: `x and x.attr` (short-circuit), `x if x else d` (ternary)
+       — suppress findings on the same line.
     """
     lines = source_bytes.decode("utf-8", errors="replace").splitlines()
     guarded: dict[str, set[int]] = {}
 
     # Track if/guard blocks by variable
     active_guards: list[tuple[str, int, int]] = []  # (var_name, guard_indent, start_line)
+    # Track early-exit guards: after the if-block ends, all subsequent lines are guarded
+    early_exit_guards: list[tuple[str, int, int]] = []  # (var_name, guard_indent, start_line)
+    # Track assert-based guards: all lines after assert are guarded
+    assert_guarded_from: dict[str, int] = {}  # var_name -> line number
 
     for i, line in enumerate(lines):
         stripped = line.lstrip()
         indent = len(line) - len(stripped)
+        lineno = i + 1
 
         # Close any guards that have ended (dedent)
         active_guards = [
@@ -53,33 +108,70 @@ def _find_guarded_lines(
             if indent > gi or not stripped  # blank lines don't end blocks
         ]
 
-        # Mark current line as guarded for active guards
+        # Check if early-exit guards have finished their block — if so,
+        # all subsequent lines are guarded (None eliminated by early exit)
+        new_early_exits = []
+        for var, gi, sl in early_exit_guards:
+            if indent <= gi and stripped:
+                # Block ended — everything from here on is guarded
+                assert_guarded_from.setdefault(var, lineno)
+            else:
+                new_early_exits.append((var, gi, sl))
+        early_exit_guards = new_early_exits
+
+        # Mark current line as guarded for active block guards
         for var_name, _, _ in active_guards:
-            guarded.setdefault(var_name, set()).add(i + 1)
+            guarded.setdefault(var_name, set()).add(lineno)
 
-        # Detect guard patterns
-        guard_patterns = [
-            # Python: if x is not None:
-            re.compile(r'if\s+(\w+)\s+is\s+not\s+None\s*:'),
-            # Python: if x is not None and ...
-            re.compile(r'if\s+(\w+)\s+is\s+not\s+None\b'),
-            # Python: if x != None:
-            re.compile(r'if\s+(\w+)\s*!=\s*None\s*:'),
-            # Python truthiness: if x:
-            re.compile(r'if\s+(\w+)\s*:'),
-            # JS/TS/Java/C#: if (x !== null)
-            re.compile(r'if\s*\(\s*(\w+)\s*!==?\s*null\s*\)'),
-            # JS/TS/Java/C#: if (x != null)
-            re.compile(r'if\s*\(\s*(\w+)\s*!=\s*null\s*\)'),
-            # JS/TS: if (x)
-            re.compile(r'if\s*\(\s*(\w+)\s*\)'),
-        ]
+        # Mark current line as guarded for assert/early-exit continuation
+        for var_name, from_line in assert_guarded_from.items():
+            if lineno >= from_line:
+                guarded.setdefault(var_name, set()).add(lineno)
 
-        for pattern in guard_patterns:
+        # Check inline guard patterns (same-line suppression)
+        for pattern in _INLINE_GUARD_RE:
+            m = pattern.search(stripped)
+            if m:
+                var_name = m.group(1)
+                guarded.setdefault(var_name, set()).add(lineno)
+
+        # Detect assert guards
+        if stripped.startswith("assert "):
+            for pattern in _ASSERT_PATTERNS:
+                m = pattern.match(stripped)
+                if m:
+                    var_name = m.group(1)
+                    # All lines after this assert are guarded
+                    assert_guarded_from.setdefault(var_name, lineno + 1)
+                    break
+
+        # Detect early-exit patterns: if x is None: raise/return
+        for pattern in _EARLY_EXIT_PATTERNS:
             m = pattern.match(stripped)
             if m:
                 var_name = m.group(1)
-                active_guards.append((var_name, indent, i + 1))
+                # Check if body contains raise/return (within next few lines)
+                early_exit_guards.append((var_name, indent, lineno))
+                # Also look for single-line: `if x is None: raise ValueError`
+                after_colon = stripped.split(":", 1)
+                if len(after_colon) > 1:
+                    body = after_colon[1].strip()
+                    if body.startswith(("raise", "return", "continue", "break", "throw")):
+                        # Single-line early exit — everything after is guarded
+                        assert_guarded_from.setdefault(var_name, lineno + 1)
+                        # Remove from early_exit_guards since it's handled
+                        early_exit_guards = [
+                            (v, g, s) for v, g, s in early_exit_guards
+                            if not (v == var_name and s == lineno)
+                        ]
+                break
+
+        # Detect block guard patterns (if x is not None:)
+        for pattern in _GUARD_PATTERNS:
+            m = pattern.match(stripped)
+            if m:
+                var_name = m.group(1)
+                active_guards.append((var_name, indent, lineno))
                 break
 
     return guarded

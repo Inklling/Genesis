@@ -25,7 +25,7 @@ def test_run_regex_checks_javascript(sample_javascript_code):
     findings = run_regex_checks(sample_javascript_code, "test.js", "javascript")
     
     rules_found = {f.rule for f in findings}
-    assert "var-usage" in rules_found
+    # var-usage rule was removed (style opinion, not correctness)
     assert "console-log" in rules_found
     assert "loose-equality" in rules_found
     assert "eval-usage" in rules_found
@@ -376,7 +376,7 @@ def test_analyze_file_static_javascript(sample_javascript_code):
     assert all(f.source in (Source.STATIC, Source.AST) for f in findings)
 
     rules = {f.rule for f in findings}
-    assert "var-usage" in rules
+    # var-usage rule was removed (style opinion, not correctness)
     assert "console-log" in rules
     assert "eval-usage" in rules
 
@@ -567,8 +567,8 @@ var y = 10;
     findings = run_regex_checks(code, "test.js", "javascript")
     eval_findings = [f for f in findings if f.rule == "eval-usage"]
     assert len(eval_findings) == 0  # eval is inside block comment
-    var_findings = [f for f in findings if f.rule == "var-usage"]
-    assert len(var_findings) == 1  # only the var y outside comment
+    # var-usage rule was removed; check loose-equality or other rules instead
+    # The key assertion: block comments are properly skipped
 
 
 def test_regression_python_triple_quote_string_assignment():

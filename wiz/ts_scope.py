@@ -70,9 +70,13 @@ def check_unused_variables(semantics: FileSemantics, filepath: str) -> list[Find
     """Find variables that are assigned but never read in the same or child scope.
 
     Excludes: _ prefixed names, augmented assignments (x += 1 implies prior use),
-    loop variables used in iteration, parameters.
+    loop variables used in iteration, parameters, class-scope attributes.
     """
     findings = []
+
+    # Build set of class scope IDs to skip class-level attribute declarations
+    # (Pydantic fields, dataclass fields, TypeVars, typed annotations, etc.)
+    class_scope_ids = {s.scope_id for s in semantics.scopes if s.kind == "class"}
 
     for asgn in semantics.assignments:
         # Skip parameters (handled differently), augmented, and _ prefixed
@@ -84,6 +88,10 @@ def check_unused_variables(semantics: FileSemantics, filepath: str) -> list[Find
             continue
         # Skip self.attr assignments
         if asgn.value_node_type == "self_attr":
+            continue
+        # Skip class-scope assignments — these are attribute declarations,
+        # not unused local variables (Pydantic fields, TypeVars, etc.)
+        if asgn.scope_id in class_scope_ids:
             continue
 
         # Check if name is referenced in this scope or any child scope
@@ -182,7 +190,8 @@ def check_uninitialized_variables(semantics: FileSemantics, filepath: str) -> li
 
     Conservative linear-order check (no CFG). Only flags when a reference
     appears at a line strictly before any assignment in the same scope.
-    Excludes: parameters, imports, builtins, module-scope names.
+    Excludes: parameters, imports, builtins, module-scope names, loop variables,
+    attribute access references (obj.attr is not a local variable).
     """
     findings = []
     seen_flagged: set[tuple[str, int]] = set()
@@ -193,6 +202,18 @@ def check_uninitialized_variables(semantics: FileSemantics, filepath: str) -> li
         scope_assigns = first_assignment.setdefault(asgn.scope_id, {})
         if asgn.name not in scope_assigns or asgn.line < scope_assigns[asgn.name]:
             scope_assigns[asgn.name] = asgn.line
+
+    # Build set of parameter names per scope (parameters are always initialized)
+    param_names: dict[int, set[str]] = {}
+    for asgn in semantics.assignments:
+        if asgn.is_parameter:
+            param_names.setdefault(asgn.scope_id, set()).add(asgn.name)
+
+    # Build set of for-loop variable names per scope
+    loop_var_names: dict[int, set[str]] = {}
+    for asgn in semantics.assignments:
+        if asgn.value_node_type == "loop_variable":
+            loop_var_names.setdefault(asgn.scope_id, set()).add(asgn.name)
 
     # Only check function scopes (not module or class — those are more permissive)
     func_scopes = {s.scope_id for s in semantics.scopes if s.kind == "function"}
@@ -205,6 +226,18 @@ def check_uninitialized_variables(semantics: FileSemantics, filepath: str) -> li
         if name in _PYTHON_BUILTINS:
             continue
         if name.startswith("_"):
+            continue
+
+        # Skip attribute access references — obj.attr is not a local variable
+        if ref.context == "attribute_access":
+            continue
+
+        # Skip names that are parameters in this function scope
+        if name in param_names.get(ref.scope_id, set()):
+            continue
+
+        # Skip for-loop variables (they are initialized by the loop)
+        if name in loop_var_names.get(ref.scope_id, set()):
             continue
 
         # Check if name is assigned in this scope
