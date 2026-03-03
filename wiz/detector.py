@@ -63,8 +63,6 @@ def run_regex_checks(content: str, filepath: str, language: str,
     if language in ("javascript", "typescript", "go", "rust", "java",
                      "c", "cpp", "csharp", "swift", "kotlin", "pine"):
         comment_prefixes = {"//"}
-    elif language == "python":
-        comment_prefixes = {"#"}
 
     # Block comment state tracking
     in_block_comment = False
@@ -509,7 +507,7 @@ def analyze_file_static(filepath: str, content: str, language: str,
             check_uninitialized_variables,
         )
         from .ts_taint import analyze_taint
-        from .ts_smells import check_god_class, check_feature_envy, check_long_method
+        from .ts_smells import check_god_class, check_feature_envy, check_long_method, check_semantic_clones
 
         findings.extend(check_unused_variables(semantics, filepath))
         findings.extend(check_variable_shadowing(semantics, filepath))
@@ -548,6 +546,7 @@ def analyze_file_static(filepath: str, content: str, language: str,
         findings.extend(check_god_class(semantics, filepath))
         findings.extend(check_feature_envy(semantics, filepath))
         findings.extend(check_long_method(semantics, filepath))
+        findings.extend(check_semantic_clones({filepath: semantics}))
 
     # Deduplicate: same file + line + rule
     seen = set()

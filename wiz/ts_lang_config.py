@@ -138,158 +138,82 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         # Class analysis
         self_keyword="self",
     ),
-    "javascript": LanguageConfig(
-        ts_language_name="javascript",
-        import_node_types=["import_statement"],
-        function_node_types=[
-            "function_declaration", "arrow_function", "method_definition",
-            "function",
-        ],
-        catch_node_types=["catch_clause"],
-        catch_body_field="body",
-        return_node_types=["return_statement"],
-        break_node_types=["break_statement"],
-        continue_node_types=["continue_statement"],
-        throw_node_types=["throw_statement"],
-        builtin_names={
-            "console", "undefined", "NaN", "Infinity", "eval",
-            "parseInt", "parseFloat", "isNaN", "isFinite",
-            "encodeURI", "decodeURI", "encodeURIComponent",
-            "decodeURIComponent", "Object", "Array", "String",
-            "Number", "Boolean", "Symbol", "Map", "Set", "Promise",
-        },
-        default_value_node_types=["array", "object"],
-        parameter_node_types=["formal_parameters"],
-        block_node_types=["statement_block"],
-        branch_node_types=[
-            "if_statement", "else_clause", "for_statement",
-            "for_in_statement", "while_statement", "do_statement",
-            "switch_case", "catch_clause", "ternary_expression",
-            "binary_expression",  # for && and ||
-        ],
-        pass_node_types=[],
-        comment_node_types=["comment"],
-        # Semantic extraction
-        assignment_node_types=["variable_declarator", "assignment_expression", "augmented_assignment_expression"],
-        call_node_types=["call_expression"],
-        class_node_types=["class_declaration"],
-        scope_boundary_types=[
-            "function_declaration", "arrow_function", "method_definition",
-            "function", "class_declaration",
-        ],
-        attribute_access_types=["member_expression"],
-        block_scoped=True,
-        # Taint analysis
-        taint_source_patterns=[
-            ("req.body", "user_input"), ("req.params", "user_input"),
-            ("req.query", "user_input"), ("document.getElementById", "user_input"),
-            ("window.location", "user_input"),
-        ],
-        taint_sink_patterns=[
-            ("eval", "eval"), (".innerHTML", "html_output"),
-            ("document.write", "html_output"),
-            ("child_process.exec", "system_cmd"),
-        ],
-        taint_sanitizer_patterns=["DOMPurify.sanitize", "escapeHtml", "sanitizeHtml"],
-        # CFG control flow
-        cfg_if_node_types=["if_statement"],
-        cfg_else_node_types=["else_clause"],
-        cfg_for_node_types=["for_statement", "for_in_statement"],
-        cfg_while_node_types=["while_statement", "do_statement"],
-        cfg_try_node_types=["try_statement"],
-        cfg_switch_node_types=["switch_statement"],
-        # Resource tracking
-        resource_patterns=[
-            ("createReadStream", "close", False, "stream"),
-            ("createWriteStream", "close", False, "stream"),
-            ("createConnection", "end", False, "connection"),
-        ],
-        # Type inference
-        literal_type_map={
-            "number": "FLOAT", "string": "STRING",
-            "true": "BOOL", "false": "BOOL", "null": "NONE",
-            "undefined": "NONE", "array": "LIST", "object": "DICT",
-        },
-        nullable_return_patterns=[".find", ".match"],
-        # Class analysis
-        self_keyword="this",
-    ),
-    "typescript": LanguageConfig(
-        ts_language_name="typescript",
-        import_node_types=["import_statement"],
-        function_node_types=[
-            "function_declaration", "arrow_function", "method_definition",
-            "function",
-        ],
-        catch_node_types=["catch_clause"],
-        catch_body_field="body",
-        return_node_types=["return_statement"],
-        break_node_types=["break_statement"],
-        continue_node_types=["continue_statement"],
-        throw_node_types=["throw_statement"],
-        builtin_names={
-            "console", "undefined", "NaN", "Infinity", "eval",
-            "parseInt", "parseFloat", "isNaN", "isFinite",
-            "encodeURI", "decodeURI", "encodeURIComponent",
-            "decodeURIComponent", "Object", "Array", "String",
-            "Number", "Boolean", "Symbol", "Map", "Set", "Promise",
-        },
-        default_value_node_types=["array", "object"],
-        parameter_node_types=["formal_parameters"],
-        block_node_types=["statement_block"],
-        branch_node_types=[
-            "if_statement", "else_clause", "for_statement",
-            "for_in_statement", "while_statement", "do_statement",
-            "switch_case", "catch_clause", "ternary_expression",
-            "binary_expression",
-        ],
-        pass_node_types=[],
-        comment_node_types=["comment"],
-        # Semantic extraction
-        assignment_node_types=["variable_declarator", "assignment_expression", "augmented_assignment_expression"],
-        call_node_types=["call_expression"],
-        class_node_types=["class_declaration"],
-        scope_boundary_types=[
-            "function_declaration", "arrow_function", "method_definition",
-            "function", "class_declaration",
-        ],
-        attribute_access_types=["member_expression"],
-        block_scoped=True,
-        # Taint analysis (same as JS)
-        taint_source_patterns=[
-            ("req.body", "user_input"), ("req.params", "user_input"),
-            ("req.query", "user_input"), ("document.getElementById", "user_input"),
-            ("window.location", "user_input"),
-        ],
-        taint_sink_patterns=[
-            ("eval", "eval"), (".innerHTML", "html_output"),
-            ("document.write", "html_output"),
-            ("child_process.exec", "system_cmd"),
-        ],
-        taint_sanitizer_patterns=["DOMPurify.sanitize", "escapeHtml", "sanitizeHtml"],
-        # CFG control flow
-        cfg_if_node_types=["if_statement"],
-        cfg_else_node_types=["else_clause"],
-        cfg_for_node_types=["for_statement", "for_in_statement"],
-        cfg_while_node_types=["while_statement", "do_statement"],
-        cfg_try_node_types=["try_statement"],
-        cfg_switch_node_types=["switch_statement"],
-        # Resource tracking
-        resource_patterns=[
-            ("createReadStream", "close", False, "stream"),
-            ("createWriteStream", "close", False, "stream"),
-            ("createConnection", "end", False, "connection"),
-        ],
-        # Type inference
-        literal_type_map={
-            "number": "FLOAT", "string": "STRING",
-            "true": "BOOL", "false": "BOOL", "null": "NONE",
-            "undefined": "NONE", "array": "LIST", "object": "DICT",
-        },
-        nullable_return_patterns=[".find", ".match"],
-        # Class analysis
-        self_keyword="this",
-    ),
+}
+
+# JS and TS share identical config except for ts_language_name
+_JS_BASE = dict(
+    import_node_types=["import_statement"],
+    function_node_types=[
+        "function_declaration", "arrow_function", "method_definition",
+        "function",
+    ],
+    catch_node_types=["catch_clause"],
+    catch_body_field="body",
+    return_node_types=["return_statement"],
+    break_node_types=["break_statement"],
+    continue_node_types=["continue_statement"],
+    throw_node_types=["throw_statement"],
+    builtin_names={
+        "console", "undefined", "NaN", "Infinity", "eval",
+        "parseInt", "parseFloat", "isNaN", "isFinite",
+        "encodeURI", "decodeURI", "encodeURIComponent",
+        "decodeURIComponent", "Object", "Array", "String",
+        "Number", "Boolean", "Symbol", "Map", "Set", "Promise",
+    },
+    default_value_node_types=["array", "object"],
+    parameter_node_types=["formal_parameters"],
+    block_node_types=["statement_block"],
+    branch_node_types=[
+        "if_statement", "else_clause", "for_statement",
+        "for_in_statement", "while_statement", "do_statement",
+        "switch_case", "catch_clause", "ternary_expression",
+        "binary_expression",
+    ],
+    pass_node_types=[],
+    comment_node_types=["comment"],
+    assignment_node_types=["variable_declarator", "assignment_expression", "augmented_assignment_expression"],
+    call_node_types=["call_expression"],
+    class_node_types=["class_declaration"],
+    scope_boundary_types=[
+        "function_declaration", "arrow_function", "method_definition",
+        "function", "class_declaration",
+    ],
+    attribute_access_types=["member_expression"],
+    block_scoped=True,
+    taint_source_patterns=[
+        ("req.body", "user_input"), ("req.params", "user_input"),
+        ("req.query", "user_input"), ("document.getElementById", "user_input"),
+        ("window.location", "user_input"),
+    ],
+    taint_sink_patterns=[
+        ("eval", "eval"), (".innerHTML", "html_output"),
+        ("document.write", "html_output"),
+        ("child_process.exec", "system_cmd"),
+    ],
+    taint_sanitizer_patterns=["DOMPurify.sanitize", "escapeHtml", "sanitizeHtml"],
+    cfg_if_node_types=["if_statement"],
+    cfg_else_node_types=["else_clause"],
+    cfg_for_node_types=["for_statement", "for_in_statement"],
+    cfg_while_node_types=["while_statement", "do_statement"],
+    cfg_try_node_types=["try_statement"],
+    cfg_switch_node_types=["switch_statement"],
+    resource_patterns=[
+        ("createReadStream", "close", False, "stream"),
+        ("createWriteStream", "close", False, "stream"),
+        ("createConnection", "end", False, "connection"),
+    ],
+    literal_type_map={
+        "number": "FLOAT", "string": "STRING",
+        "true": "BOOL", "false": "BOOL", "null": "NONE",
+        "undefined": "NONE", "array": "LIST", "object": "DICT",
+    },
+    nullable_return_patterns=[".find", ".match"],
+    self_keyword="this",
+)
+
+LANGUAGE_CONFIGS.update({
+    "javascript": LanguageConfig(ts_language_name="javascript", **_JS_BASE),
+    "typescript": LanguageConfig(ts_language_name="typescript", **_JS_BASE),
     "go": LanguageConfig(
         ts_language_name="go",
         import_node_types=["import_declaration"],
@@ -548,7 +472,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         # Class analysis
         self_keyword="this",
     ),
-}
+})
 
 
 def get_config(language: str) -> LanguageConfig | None:

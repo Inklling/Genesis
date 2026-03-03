@@ -103,7 +103,7 @@ class DepGraph:
         # in_degree = number of dependencies (imports) each file has
         in_degree = {}
         for path, node in self.nodes.items():
-            in_degree[path] = len([d for d in node.imports if d in self.nodes])
+            in_degree[path] = sum(1 for d in node.imports if d in self.nodes)
 
         queue = deque(sorted(p for p, d in in_degree.items() if d == 0))
         result = []

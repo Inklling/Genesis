@@ -2,6 +2,7 @@
 
 import json
 import sys
+import textwrap
 from collections import Counter
 from .config import (
     Finding, FileAnalysis, ScanReport, Severity, Source, Category,
@@ -274,22 +275,9 @@ def print_optimize_result(filepath: str, static_findings: list[Finding],
     print()
 
 
-def print_debug_json(filepath: str, static_findings: list[Finding],
-                     llm_result: "Optional[dict]", tracker=None):
-    """Print debug result as JSON to stdout."""
-    output = {
-        "filepath": filepath,
-        "static_findings": [f.to_dict() for f in static_findings] if static_findings else [],
-        "llm_result": llm_result,
-    }
-    if tracker:
-        output["cost_usd"] = round(tracker.total_cost, 6)
-    print(json.dumps(output, indent=2))
-
-
-def print_optimize_json(filepath: str, static_findings: list[Finding],
+def print_analysis_json(filepath: str, static_findings: list[Finding],
                         llm_result: "Optional[dict]", tracker=None):
-    """Print optimize result as JSON to stdout."""
+    """Print analysis result as JSON to stdout."""
     output = {
         "filepath": filepath,
         "static_findings": [f.to_dict() for f in static_findings] if static_findings else [],
@@ -298,6 +286,11 @@ def print_optimize_json(filepath: str, static_findings: list[Finding],
     if tracker:
         output["cost_usd"] = round(tracker.total_cost, 6)
     print(json.dumps(output, indent=2))
+
+
+# Keep aliases for backward compatibility
+print_debug_json = print_analysis_json
+print_optimize_json = print_analysis_json
 
 
 def print_cost_estimate(total_lines: int, total_files: int, est_tokens: int, est_cost: float):
@@ -770,17 +763,8 @@ def print_explanation(explanation):
         print("  " + "-" * 66)
         for section in explanation.findings_explained:
             print(f"\n  {_c('yellow', section.title)}")
-            # Wrap content at ~70 chars
-            words = section.content.split()
-            line = "    "
-            for word in words:
-                if len(line) + len(word) > 72:
-                    print(line)
-                    line = "    " + word
-                else:
-                    line += " " + word if line.strip() else "    " + word
-            if line.strip():
-                print(line)
+            print(textwrap.fill(section.content, width=72,
+                                initial_indent="    ", subsequent_indent="    "))
             if section.code_snippet:
                 print(f"    {_c('gray', section.code_snippet)}")
         print()

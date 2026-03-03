@@ -85,6 +85,33 @@ def _find_guarded_lines(
     return guarded
 
 
+def _resolve_nullable_in_scope(
+    var_name: str,
+    scope_id: int,
+    nullable_vars: dict[tuple[str, int], TypeInfo],
+    semantics: FileSemantics,
+) -> TypeInfo | None:
+    """Look up a variable in nullable_vars, walking parent scopes if needed."""
+    tinfo = nullable_vars.get((var_name, scope_id))
+    if tinfo is not None:
+        return tinfo
+    for scope in semantics.scopes:
+        if scope.scope_id == scope_id:
+            parent = scope.parent_id
+            while parent is not None:
+                tinfo = nullable_vars.get((var_name, parent))
+                if tinfo:
+                    return tinfo
+                for s in semantics.scopes:
+                    if s.scope_id == parent:
+                        parent = s.parent_id
+                        break
+                else:
+                    break
+            break
+    return None
+
+
 # ─── Null safety check ───────────────────────────────────────────────
 
 def check_null_safety(
@@ -108,12 +135,6 @@ def check_null_safety(
 
     findings = []
     seen = set()
-
-    source_bytes = semantics.filepath  # We need source bytes passed in
-    # Actually we need to reconstruct source from semantics references
-
-    # We'll use a simpler approach: check references to nullable variables
-    # and see if they're used in attribute access context without guarding
 
     # Collect nullable variables
     nullable_vars: dict[tuple[str, int], TypeInfo] = {}
@@ -139,29 +160,7 @@ def check_null_safety(
         if ref.context != "attribute_access":
             continue
 
-        key = (ref.name, ref.scope_id)
-
-        # Check if this variable is nullable
-        tinfo = nullable_vars.get(key)
-        if tinfo is None:
-            # Check parent scopes
-            for scope in semantics.scopes:
-                if scope.scope_id == ref.scope_id:
-                    parent = scope.parent_id
-                    while parent is not None:
-                        parent_key = (ref.name, parent)
-                        tinfo = nullable_vars.get(parent_key)
-                        if tinfo:
-                            break
-                        # Find parent's parent
-                        for s in semantics.scopes:
-                            if s.scope_id == parent:
-                                parent = s.parent_id
-                                break
-                        else:
-                            break
-                    break
-
+        tinfo = _resolve_nullable_in_scope(ref.name, ref.scope_id, nullable_vars, semantics)
         if tinfo is None:
             continue
 
@@ -204,26 +203,7 @@ def check_null_safety(
         if call.receiver is None:
             continue
 
-        key = (call.receiver, call.scope_id)
-        tinfo = nullable_vars.get(key)
-        if tinfo is None:
-            # Check parent scopes
-            for scope in semantics.scopes:
-                if scope.scope_id == call.scope_id:
-                    parent = scope.parent_id
-                    while parent is not None:
-                        parent_key = (call.receiver, parent)
-                        tinfo = nullable_vars.get(parent_key)
-                        if tinfo:
-                            break
-                        for s in semantics.scopes:
-                            if s.scope_id == parent:
-                                parent = s.parent_id
-                                break
-                        else:
-                            break
-                    break
-
+        tinfo = _resolve_nullable_in_scope(call.receiver, call.scope_id, nullable_vars, semantics)
         if tinfo is None:
             continue
 

@@ -224,10 +224,5 @@ def check_uninitialized_variables(semantics: FileSemantics, filepath: str) -> li
                         message=f"Variable '{name}' may be used before assignment (first assigned line {scope_assigns[name]})",
                         suggestion=f"Ensure '{name}' is assigned before use on all code paths",
                     ))
-        else:
-            # Not assigned in this scope — check parent scopes
-            # If not found anywhere up the chain, could be uninitialized
-            # But this is too noisy (globals, closures) so skip
-            pass
 
     return findings

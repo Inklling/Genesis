@@ -8,6 +8,7 @@ Returns empty FileTypeMap when tree-sitter is not available.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
@@ -156,7 +157,6 @@ def _infer_nullable_from_call(value_text: str, config: LanguageConfig) -> Option
 
     Special case: .get(key, default) with a non-None default is NOT nullable.
     """
-    import re
     for pattern in config.nullable_return_patterns:
         if pattern in value_text:
             # Check for .get() with a non-None default value
@@ -205,7 +205,6 @@ def _extract_annotations_from_tree(semantics: FileSemantics, source_bytes: bytes
         # Look for type annotations in assignments: x: int = ...
         # tree-sitter Python: type node in typed_parameter, type alias, etc.
         # Simpler approach: regex over source lines
-        import re
         for asgn in semantics.assignments:
             if asgn.is_parameter:
                 continue
@@ -241,7 +240,6 @@ def _extract_annotations_from_tree(semantics: FileSemantics, source_bytes: bytes
                     annotations[("__return__", func_scope_id)] = ret_text
 
     elif language in ("typescript",):
-        import re
         for asgn in semantics.assignments:
             line_idx = asgn.line - 1
             if 0 <= line_idx < len(lines):
@@ -282,21 +280,16 @@ def infer_types(
     # Extract annotations
     annotations = _extract_annotations_from_tree(semantics, source_bytes)
 
+    # Pre-compute lookup dicts for O(1) annotation resolution
+    scope_by_id = {s.scope_id: s for s in semantics.scopes}
+    fdef_by_qname = {fd.qualified_name: fd for fd in semantics.function_defs}
+
     # Apply annotation-based types first (highest priority)
     for (name, scope_id), ann_text in annotations.items():
         if name == "__return__":
-            # Return type annotation
-            fdef = None
-            for fd in semantics.function_defs:
-                # Find function by scope
-                func_scope = None
-                for s in semantics.scopes:
-                    if s.scope_id == scope_id and s.kind == "function":
-                        func_scope = s
-                        break
-                if func_scope and fd.qualified_name == func_scope.name:
-                    fdef = fd
-                    break
+            # Return type annotation — look up scope then function
+            scope = scope_by_id.get(scope_id)
+            fdef = fdef_by_qname.get(scope.name) if scope and scope.kind == "function" else None
             if fdef:
                 tinfo = _infer_from_annotation(ann_text, semantics.language)
                 if tinfo:
@@ -315,7 +308,7 @@ def infer_types(
         if asgn.is_parameter:
             continue
 
-        # Rule: None literal
+        # None/null literal (check before regular literals to preserve nullable flag)
         tinfo = _infer_none_literal(asgn.value_text, asgn.value_node_type)
         if tinfo:
             type_map.types[key] = tinfo
@@ -367,16 +360,8 @@ def infer_types(
         if fdef.qualified_name in type_map.return_types:
             continue  # annotation takes priority
 
-        # Check if any assignment within this function returns None
         has_none_return = False
         has_value_return = False
-        return_type = None
-
-        for asgn in semantics.assignments:
-            if not (fdef.line <= asgn.line <= fdef.end_line):
-                continue
-            # This is a heuristic — we check if "return None" or "return" appears
-            # in the function
 
         # Check source lines for return statements
         lines = source_bytes.decode("utf-8", errors="replace").splitlines()

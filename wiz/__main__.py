@@ -644,13 +644,7 @@ def cmd_hook(args):
         else:
             print(f"Unknown hook action: {action}", file=sys.stderr)
             return 1
-    except FileNotFoundError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        return 1
-    except FileExistsError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        return 1
-    except PermissionError as e:
+    except (FileNotFoundError, FileExistsError, PermissionError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
 
@@ -744,11 +738,10 @@ def cmd_setup(args):
 
     anthropic_installed = False
     try:
-        import importlib
-        importlib.import_module("anthropic")
+        import anthropic  # noqa: F401
         anthropic_installed = True
     except ImportError:
-        pass  # Not installed - that's fine, we just report it
+        pass
 
     rpt.print_setup_status(api_key_set, anthropic_installed)
     return 0

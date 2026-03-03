@@ -23,6 +23,16 @@ class LLMError(Exception):
     pass
 
 
+def _strip_markdown_fences(text: str) -> str:
+    """Strip markdown code fences (```...```) from LLM response text."""
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
+    return text
+
+
 class CostTracker:
     """Track cumulative API costs for a session (thread-safe)."""
 
@@ -304,12 +314,8 @@ def _parse_debug_response(text: str) -> Optional[dict]:
         pass
 
     # Strip markdown fences
-    if stripped.startswith("```"):
-        # Remove opening fence (possibly with language hint like ```json)
-        stripped = stripped.split("\n", 1)[1] if "\n" in stripped else stripped[3:]
-        if stripped.endswith("```"):
-            stripped = stripped[:-3]
-        stripped = stripped.strip()
+    stripped = _strip_markdown_fences(stripped)
+    if stripped != text.strip():
         try:
             result = json.loads(stripped)
             if isinstance(result, dict):
@@ -386,13 +392,7 @@ def analyze_chunk(chunk: Chunk, cost_tracker: CostTracker) -> list[Finding]:
     cost_tracker.add(response.usage.input_tokens, response.usage.output_tokens)
 
     # Parse JSON response
-    text = response.content[0].text.strip()
-    # Strip markdown code fences if present
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-        if text.endswith("```"):
-            text = text[:-3]
-        text = text.strip()
+    text = _strip_markdown_fences(response.content[0].text.strip())
 
     try:
         raw_findings = json.loads(text)
@@ -517,6 +517,42 @@ def _merge_chunked_results(results: list[dict]) -> dict:
     return merged
 
 
+def _analyze_file_chunked(
+    content: str, filepath: str, language: str,
+    system_prompt: str, extra_context: str,
+    cost_tracker: CostTracker,
+) -> tuple[dict, CostTracker]:
+    """Shared chunking logic for debug_file and optimize_file."""
+    client = _get_client()
+
+    if content.count("\n") > CHUNK_SIZE:
+        chunks = chunk_file(content, filepath, language)
+        results = []
+        for chunk in chunks:
+            parsed, raw = _debug_single_chunk(
+                client, chunk.content, filepath, language,
+                system_prompt, extra_context, cost_tracker,
+                chunk_header=f"Lines {chunk.start_line}-{chunk.end_line} "
+                             f"(chunk {chunk.chunk_index + 1}/{chunk.total_chunks})",
+            )
+            if parsed:
+                results.append(parsed)
+            elif not results:
+                return {"raw_markdown": raw}, cost_tracker
+
+        if results:
+            return _merge_chunked_results(results), cost_tracker
+
+    # Single-chunk path
+    parsed, raw = _debug_single_chunk(
+        client, content, filepath, language,
+        system_prompt, extra_context, cost_tracker,
+    )
+    if parsed:
+        return parsed, cost_tracker
+    return {"raw_markdown": raw}, cost_tracker
+
+
 def debug_file(
     content: str, filepath: str, language: str,
     error_msg: Optional[str] = None,
@@ -533,7 +569,6 @@ def debug_file(
     if cost_tracker is None:
         cost_tracker = CostTracker()
 
-    client = _get_client()
     system_prompt = _build_debug_system_prompt(language)
 
     # Build extra context
@@ -565,37 +600,7 @@ def debug_file(
             extra_parts.append(f"Related file: {ctx_path}\n```\n{ctx_content}\n```")
 
     extra_context = "\n\n".join(extra_parts)
-
-    # Chunking for large files
-    lines = content.splitlines()
-    if len(lines) > CHUNK_SIZE:
-        chunks = chunk_file(content, filepath, language)
-        results = []
-        for chunk in chunks:
-            parsed, raw = _debug_single_chunk(
-                client, chunk.content, filepath, language,
-                system_prompt, extra_context, cost_tracker,
-                chunk_header=f"Lines {chunk.start_line}-{chunk.end_line} "
-                             f"(chunk {chunk.chunk_index + 1}/{chunk.total_chunks})",
-            )
-            if parsed:
-                results.append(parsed)
-            elif results:
-                pass  # skip failed chunk if we have others
-            else:
-                return {"raw_markdown": raw}, cost_tracker
-
-        if results:
-            return _merge_chunked_results(results), cost_tracker
-
-    # Single-chunk path
-    parsed, raw = _debug_single_chunk(
-        client, content, filepath, language,
-        system_prompt, extra_context, cost_tracker,
-    )
-    if parsed:
-        return parsed, cost_tracker
-    return {"raw_markdown": raw}, cost_tracker
+    return _analyze_file_chunked(content, filepath, language, system_prompt, extra_context, cost_tracker)
 
 
 def optimize_file(
@@ -613,7 +618,6 @@ def optimize_file(
     if cost_tracker is None:
         cost_tracker = CostTracker()
 
-    client = _get_client()
     system_prompt = _build_optimize_system_prompt(language)
 
     # Filter static findings to perf-relevant ones
@@ -634,37 +638,7 @@ def optimize_file(
             extra_parts.append(f"Related file: {ctx_path}\n```\n{ctx_content}\n```")
 
     extra_context = "\n\n".join(extra_parts)
-
-    # Chunking for large files
-    lines = content.splitlines()
-    if len(lines) > CHUNK_SIZE:
-        chunks = chunk_file(content, filepath, language)
-        results = []
-        for chunk in chunks:
-            parsed, raw = _debug_single_chunk(
-                client, chunk.content, filepath, language,
-                system_prompt, extra_context, cost_tracker,
-                chunk_header=f"Lines {chunk.start_line}-{chunk.end_line} "
-                             f"(chunk {chunk.chunk_index + 1}/{chunk.total_chunks})",
-            )
-            if parsed:
-                results.append(parsed)
-            elif results:
-                pass
-            else:
-                return {"raw_markdown": raw}, cost_tracker
-
-        if results:
-            return _merge_chunked_results(results), cost_tracker
-
-    # Single-chunk path
-    parsed, raw = _debug_single_chunk(
-        client, content, filepath, language,
-        system_prompt, extra_context, cost_tracker,
-    )
-    if parsed:
-        return parsed, cost_tracker
-    return {"raw_markdown": raw}, cost_tracker
+    return _analyze_file_chunked(content, filepath, language, system_prompt, extra_context, cost_tracker)
 
 
 def estimate_cost(total_chars: int) -> float:
@@ -680,11 +654,6 @@ def estimate_cost(total_chars: int) -> float:
         + (output_tokens / 1_000_000) * LLM_OUTPUT_COST_PER_M
     )
 
-
-# ─── Focused analysis (v0.8.0) ───────────────────────────────────────
-# The FOCUSED_ANALYZE_SYSTEM_PROMPT lives in llm_focus.py to keep prompts
-# co-located with the focus area logic. Import it when needed:
-#   from .llm_focus import FOCUSED_ANALYZE_SYSTEM_PROMPT
 
 # ─── Cross-file analysis prompts ─────────────────────────────────────
 
@@ -958,13 +927,7 @@ def fix_file(
 
     cost_tracker.add(response.usage.input_tokens, response.usage.output_tokens)
 
-    text = response.content[0].text.strip()
-    # Strip markdown fences if present
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-        if text.endswith("```"):
-            text = text[:-3]
-        text = text.strip()
+    text = _strip_markdown_fences(response.content[0].text.strip())
 
     try:
         raw_fixes = json.loads(text)

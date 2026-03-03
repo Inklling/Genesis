@@ -12,8 +12,7 @@ from .ts_lang_config import get_config, LanguageConfig
 
 def _get_named_children(node) -> list:
     """Get all named children of a node."""
-    return [node.children[i] for i in range(node.child_count)
-            if node.children[i].is_named]
+    return [c for c in node.children if c.is_named]
 
 
 def _get_node_text(node, source_bytes: bytes) -> str:
@@ -581,10 +580,10 @@ def run_tree_sitter_checks(content: str, filepath: str,
     except Exception:
         return []  # Language not available in installed pack
 
-    tree = parser.parse(content.encode("utf-8"))
+    source_bytes = content.encode("utf-8")
+    tree = parser.parse(source_bytes)
 
     findings = []
-    source_bytes = content.encode("utf-8")
     for check_fn in ALL_CHECKS:
         findings.extend(check_fn(tree, source_bytes, config, filepath))
 

@@ -189,6 +189,68 @@ def _is_sanitized(
     return False
 
 
+def _update_stmt_taint(
+    stmt, semantics: FileSemantics, config: LanguageConfig,
+    current_taint: set[str], lines: list[str],
+    source_vars: set[str] | None = None, source_lines: dict[str, int] | None = None,
+) -> None:
+    """Update current_taint in-place for a single CFG statement."""
+    if stmt.assignment_idx is not None:
+        asgn = semantics.assignments[stmt.assignment_idx]
+        rhs = asgn.value_text
+
+        for pattern, kind in config.taint_source_patterns:
+            if _matches_pattern(rhs, pattern):
+                current_taint.add(asgn.name)
+                if source_vars is not None and asgn.name not in source_vars:
+                    source_vars.add(asgn.name)
+                    if source_lines is not None:
+                        source_lines[asgn.name] = asgn.line
+                break
+        else:
+            for tvar in list(current_taint):
+                if re.search(r'\b' + re.escape(tvar) + r'\b', rhs):
+                    current_taint.add(asgn.name)
+                    break
+
+        for sanitizer in config.taint_sanitizer_patterns:
+            if sanitizer in rhs:
+                current_taint.discard(asgn.name)
+                break
+
+    if stmt.call_idx is not None:
+        call = semantics.function_calls[stmt.call_idx]
+        call_text = call.name
+        if call.receiver:
+            call_text = f"{call.receiver}.{call.name}"
+        line_idx = stmt.line - 1
+        for sanitizer in config.taint_sanitizer_patterns:
+            if sanitizer in call_text:
+                if 0 <= line_idx < len(lines):
+                    line_text = lines[line_idx]
+                    for tvar in list(current_taint):
+                        if re.search(r'\b' + re.escape(tvar) + r'\b', line_text):
+                            current_taint.discard(tvar)
+
+
+def _build_scope_children(semantics: FileSemantics) -> dict[int, set[int]]:
+    """Build parent→children scope map."""
+    scope_children: dict[int, set[int]] = {}
+    for scope in semantics.scopes:
+        parent = scope.parent_id
+        if parent is not None:
+            scope_children.setdefault(parent, set()).add(scope.scope_id)
+    return scope_children
+
+
+def _get_all_children(sid: int, scope_children: dict[int, set[int]]) -> set[int]:
+    """Recursively collect all descendant scope IDs including sid itself."""
+    result = {sid}
+    for child in scope_children.get(sid, set()):
+        result.update(_get_all_children(child, scope_children))
+    return result
+
+
 # ─── Entry point ─────────────────────────────────────────────────────
 
 def analyze_taint(
@@ -210,22 +272,10 @@ def analyze_taint(
 
     # Analyze each function scope independently
     func_scopes = [s for s in semantics.scopes if s.kind == "function"]
-
-    # Build child scope map for each function
-    scope_children: dict[int, set[int]] = {}
-    for scope in semantics.scopes:
-        parent = scope.parent_id
-        if parent is not None:
-            scope_children.setdefault(parent, set()).add(scope.scope_id)
-
-    def get_all_children(sid: int) -> set[int]:
-        result = {sid}
-        for child in scope_children.get(sid, set()):
-            result.update(get_all_children(child))
-        return result
+    scope_children = _build_scope_children(semantics)
 
     for func_scope in func_scopes:
-        func_scope_ids = get_all_children(func_scope.scope_id)
+        func_scope_ids = _get_all_children(func_scope.scope_id, scope_children)
 
         # 1. Find sources
         sources = _find_taint_sources(semantics, config, source_bytes, func_scope_ids)
@@ -330,19 +380,7 @@ def analyze_taint_pathsensitive(
     seen = set()
     lines = source_bytes.decode("utf-8", errors="replace").splitlines()
 
-    # Build scope children map
-    scope_children: dict[int, set[int]] = {}
-    for scope in semantics.scopes:
-        parent = scope.parent_id
-        if parent is not None:
-            scope_children.setdefault(parent, set()).add(scope.scope_id)
-
-    def get_all_children(sid: int) -> set[int]:
-        result = {sid}
-        for child in scope_children.get(sid, set()):
-            result.update(get_all_children(child))
-        return result
-
+    scope_children = _build_scope_children(semantics)
     func_scopes = [s for s in semantics.scopes if s.kind == "function"]
 
     for func_scope in func_scopes:
@@ -350,7 +388,7 @@ def analyze_taint_pathsensitive(
         if cfg is None:
             continue
 
-        func_scope_ids = get_all_children(func_scope.scope_id)
+        func_scope_ids = _get_all_children(func_scope.scope_id, scope_children)
 
         # 1. Find taint sources in this function
         sources = _find_taint_sources(semantics, config, source_bytes, func_scope_ids)
@@ -385,48 +423,10 @@ def analyze_taint_pathsensitive(
                 current_taint = set(taint_in)
 
                 for stmt in block.statements:
-                    line_idx = stmt.line - 1
-
-                    # Check if this statement introduces taint
-                    if stmt.assignment_idx is not None:
-                        asgn = semantics.assignments[stmt.assignment_idx]
-                        rhs = asgn.value_text
-
-                        # Check if RHS contains a taint source pattern
-                        for pattern, kind in config.taint_source_patterns:
-                            if _matches_pattern(rhs, pattern):
-                                current_taint.add(asgn.name)
-                                if asgn.name not in source_vars:
-                                    source_vars.add(asgn.name)
-                                    source_lines[asgn.name] = asgn.line
-                                break
-                        else:
-                            # Check if RHS references a tainted variable (propagation)
-                            for tvar in list(current_taint):
-                                if re.search(r'\b' + re.escape(tvar) + r'\b', rhs):
-                                    current_taint.add(asgn.name)
-                                    break
-
-                        # Check if RHS is a sanitizer (removes taint)
-                        for sanitizer in config.taint_sanitizer_patterns:
-                            if sanitizer in rhs:
-                                current_taint.discard(asgn.name)
-                                break
-
-                    # Check if this statement calls a sanitizer
-                    if stmt.call_idx is not None:
-                        call = semantics.function_calls[stmt.call_idx]
-                        call_text = call.name
-                        if call.receiver:
-                            call_text = f"{call.receiver}.{call.name}"
-                        for sanitizer in config.taint_sanitizer_patterns:
-                            if sanitizer in call_text:
-                                # Sanitizer called — remove taint from any variable on this line
-                                if 0 <= line_idx < len(lines):
-                                    line_text = lines[line_idx]
-                                    for tvar in list(current_taint):
-                                        if re.search(r'\b' + re.escape(tvar) + r'\b', line_text):
-                                            current_taint.discard(tvar)
+                    _update_stmt_taint(
+                        stmt, semantics, config, current_taint, lines,
+                        source_vars=source_vars, source_lines=source_lines,
+                    )
 
                 old_out = block_taint_out[block_id]
                 if current_taint != old_out:
@@ -454,22 +454,7 @@ def analyze_taint_pathsensitive(
                 line_idx = stmt.line - 1
 
                 # Update taint through this statement
-                if stmt.assignment_idx is not None:
-                    asgn = semantics.assignments[stmt.assignment_idx]
-                    rhs = asgn.value_text
-                    for pattern, kind in config.taint_source_patterns:
-                        if _matches_pattern(rhs, pattern):
-                            current_taint.add(asgn.name)
-                            break
-                    else:
-                        for tvar in list(current_taint):
-                            if re.search(r'\b' + re.escape(tvar) + r'\b', rhs):
-                                current_taint.add(asgn.name)
-                                break
-                    for sanitizer in config.taint_sanitizer_patterns:
-                        if sanitizer in rhs:
-                            current_taint.discard(asgn.name)
-                            break
+                _update_stmt_taint(stmt, semantics, config, current_taint, lines)
 
                 # Check for sinks
                 if stmt.call_idx is not None:
@@ -495,10 +480,8 @@ def analyze_taint_pathsensitive(
                                                 if s.variable == tvar:
                                                     source_info = s
                                                     break
-                                            if not source_info:
-                                                for s in sources:
-                                                    source_info = s
-                                                    break
+                                            if not source_info and sources:
+                                                source_info = sources[0]
 
                                             src_kind = source_info.kind if source_info else "unknown"
                                             src_var = source_info.variable if source_info else tvar

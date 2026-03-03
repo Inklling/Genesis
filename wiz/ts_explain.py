@@ -375,13 +375,13 @@ def _generate_learning_notes(
             "that's often more readable than building lists with loops."
         )
 
-    if any("lambda" in lines[i] for i in range(len(lines))):
+    if "lambda" in content:
         notes.append(
             "Uses lambda functions — small anonymous functions defined in a single line. "
             "Good for short operations passed to functions like map(), filter(), or sorted()."
         )
 
-    if any("yield" in lines[i] for i in range(len(lines))):
+    if "yield" in content:
         notes.append(
             "Uses generators (yield keyword) — a memory-efficient way to produce items "
             "one at a time instead of creating an entire list in memory."
@@ -393,19 +393,19 @@ def _generate_learning_notes(
             "classes that bundle data (attributes) with behavior (methods)."
         )
 
-    if any("with " in lines[i] for i in range(len(lines)) if language == "python"):
+    if language == "python" and "with " in content:
         notes.append(
             "Uses 'with' statements (context managers) — a safe way to handle resources "
             "like files that need to be cleaned up, even if errors occur."
         )
 
-    if any("async " in lines[i] or "await " in lines[i] for i in range(len(lines))):
+    if "async " in content or "await " in content:
         notes.append(
             "Uses async/await for asynchronous programming — a way to write code that "
             "can handle multiple tasks concurrently without blocking."
         )
 
-    if any("@" in lines[i] and not lines[i].strip().startswith("#") for i in range(len(lines))):
+    if any("@" in line and not line.strip().startswith("#") for line in lines):
         notes.append(
             "Uses decorators (@decorator_name) — a way to modify or enhance functions "
             "without changing their code. Common for logging, authentication, caching."

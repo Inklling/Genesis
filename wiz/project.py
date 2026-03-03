@@ -27,23 +27,17 @@ def _extract_signatures_python(content: str) -> str:
     lines = []
     for node in ast_mod.iter_child_nodes(tree):
         if isinstance(node, ast_mod.ClassDef):
-            bases = ", ".join(
-                ast_mod.unparse(b) if hasattr(ast_mod, "unparse") else "..."
-                for b in node.bases
-            )
+            bases = ", ".join(ast_mod.unparse(b) for b in node.bases)
             lines.append(f"class {node.name}({bases}):")
             for item in node.body:
                 if isinstance(item, ast_mod.FunctionDef):
-                    args = ast_mod.unparse(item.args) if hasattr(ast_mod, "unparse") else "..."
-                    lines.append(f"    def {item.name}({args}): ...")
+                    lines.append(f"    def {item.name}({ast_mod.unparse(item.args)}): ...")
         elif isinstance(node, ast_mod.FunctionDef):
-            args = ast_mod.unparse(node.args) if hasattr(ast_mod, "unparse") else "..."
-            lines.append(f"def {node.name}({args}): ...")
+            lines.append(f"def {node.name}({ast_mod.unparse(node.args)}): ...")
         elif isinstance(node, ast_mod.Assign):
             for target in node.targets:
                 if isinstance(target, ast_mod.Name) and target.id.isupper():
-                    val = ast_mod.unparse(node.value) if hasattr(ast_mod, "unparse") else "..."
-                    lines.append(f"{target.id} = {val[:80]}")
+                    lines.append(f"{target.id} = {ast_mod.unparse(node.value)[:80]}")
 
     return "\n".join(lines) if lines else content[:500]
 
@@ -244,7 +238,7 @@ def analyze_project(
 
         # v0.10.0: Cross-file contract inference
         try:
-            from .ts_types import infer_types, infer_contracts
+            from .ts_types import infer_types
             from .ts_lang_config import get_config as get_lang_config
             type_maps = {}
             for rel, sem in semantics_by_file.items():
@@ -253,10 +247,7 @@ def analyze_project(
                     content = file_contents.get(rel, "")
                     src_bytes = content.encode("utf-8")
                     type_maps[rel] = infer_types(sem, src_bytes, lang_cfg)
-            if type_maps:
-                contracts = infer_contracts(semantics_by_file, type_maps, call_graph)
-                # Contracts are available for downstream analysis
-                # (currently used by null safety checks in per-file analysis)
+            # type_maps used by null safety checks in per-file analysis
         except Exception:
             pass  # graceful degradation
 
@@ -290,7 +281,7 @@ def analyze_project(
 
     # 6. LLM analysis
     from .llm import CostTracker, analyze_file_with_context, synthesize_project
-    from .llm_focus import build_focus_areas, build_focused_prompt
+    from .llm_focus import build_focus_areas
 
     cost_tracker = CostTracker()
 
@@ -331,7 +322,6 @@ def analyze_project(
         file_scope = [f for f in static_findings if f.rule in ("unused-variable", "possibly-uninitialized", "variable-shadowing")]
         file_smells = [f for f in static_findings if f.rule in ("god-class", "feature-envy", "long-method", "near-duplicate")]
         focus_areas = build_focus_areas(static_findings, file_taint, file_dead, file_scope, file_smells)
-        focus_prompt = build_focused_prompt(focus_areas)
 
         # LLM cross-file analysis
         try:

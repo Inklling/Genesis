@@ -93,16 +93,7 @@ class FileSemantics:
 
 # ─── Helpers ─────────────────────────────────────────────────────────
 
-def _get_text(node, source_bytes: bytes) -> str:
-    return source_bytes[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
-
-
-def _line(node) -> int:
-    return node.start_point[0] + 1
-
-
-def _end_line(node) -> int:
-    return node.end_point[0] + 1
+from ._ts_utils import _get_text, _line, _end_line  # noqa: E402
 
 
 # ─── Extraction engine ───────────────────────────────────────────────
@@ -266,12 +257,9 @@ class _Extractor:
         self._push_scope("class", node, name=name)
 
         # Walk children to discover methods and attributes
-        method_count = 0
         attribute_names = []
 
         for child in node.children:
-            if child.type in self._func_types:
-                method_count += 1
             self._walk(child)
 
         # Count methods and attributes from what we collected
@@ -281,12 +269,6 @@ class _Extractor:
                 if asgn.name not in attribute_names:
                     attribute_names.append(asgn.name)
 
-        # Also count methods defined directly in class
-        for fdef in self.result.function_defs:
-            if fdef.parent_class == name:
-                method_count = max(method_count, 1)  # at least what we found
-
-        # Recount methods properly
         actual_methods = sum(
             1 for fd in self.result.function_defs if fd.parent_class == name
         )
