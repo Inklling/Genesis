@@ -3,19 +3,21 @@
 ## Status
 **Last agent**: Claude
 **Date**: 2026-03-03
-**What they did**: Packaging + README — pyproject.toml rewrite (wiz-scan on PyPI, v1.0.0, real deps, MIT license, py.typed), full README rewrite (quick start, comparison table, CI/CD, architecture), added LICENSE, removed redundant pytest.ini/requirements.txt. `pip install -e .` works, `wiz --version` = 1.0.0. 818 passed + 2 skipped.
+**What they did**: Real-world validation. Scanned Flask (24 files, 373 findings), FastAPI (46 files, 739 findings), Express (153 files, 2028 findings). Analyzed FP rates per rule using source-level verification. Results in `benchmarks/` directory. Overall FP rate: ~98% across 3140 findings. Top issues: unused-import/variable don't understand re-exports or class fields, null-dereference misses common guard patterns, path-traversal flags require() imports, var-usage is a style opinion. Full improvement priorities in `benchmarks/SUMMARY.md`.
 
-**Previous**: Oz — Security hardening review — 2 bugs fixed, 5 tests added
+**Previous**: Oz — Packaging review
 
 ## Review
-**For Oz**: Packaging review. Check pyproject.toml structure, README accuracy, and whether we're missing anything for PyPI readiness.
+**For Oz**: Review `benchmarks/` directory — validation results from Flask, FastAPI, Express scans. Check the SUMMARY.md improvement priorities. Are the recommendations sound? Anything missing?
 
-**Key areas to verify**:
-1. **`_is_safe_regex()` in config.py** — Nested quantifier regex detection. Invalid-but-not-ReDoS patterns intentionally return True so the downstream `re.compile()` gives a proper error message. Verify the detection pattern catches real ReDoS without false positives.
-2. **`_confirm_llm_usage()` in __main__.py** — Confirmation fires after input validation (file exists, language supported) but before any file reading or API calls. Verify ordering is correct for all 6 commands (scan --deep, debug, optimize, fix --llm, analyze, explain --deep).
-3. **`collect_files()` symlink + traversal check in analyzer.py** — `item.is_symlink()` skip + `item.resolve().relative_to(resolved_root)` traversal guard. Verify this doesn't break normal recursive directory scanning.
-4. **`Finding.to_dict()` redaction in config.py** — Only `hardcoded-secret` and `aws-credentials` rules get `[REDACTED]`. Internal `self.snippet` preserved for fixer. Verify deep scan cache (which serializes via `to_dict()`) doesn't lose data the fixer needs.
-5. **`SENSITIVE_FILE_PATTERNS` in config.py + analyzer.py** — fnmatch patterns. Verify no overlap with existing SKIP_FILES or LANGUAGE_EXTENSIONS that would make this redundant.
+**Packaging review summary** (completed by Oz):
+- **pyproject.toml** — entry point, deps, classifiers, URLs, extras split, py.typed inclusion all correct
+- **LICENSE** — standard MIT
+- **py.typed** — empty marker per PEP 561
+- **.gitignore** — already has dist/, build/, *.egg-info/
+- **__version__** — __init__.py matches pyproject.toml (1.0.0)
+- **README** — 4 fixes applied (see log)
+- **PyPI readiness** — no gaps found. setuptools >= 61 auto-includes LICENSE/README in sdist
 
 **Key areas to verify**:
 1. **`_analyze_file_chunked` in llm.py** — Changed `len(content.splitlines()) > CHUNK_SIZE` to `content.count("\n") > CHUNK_SIZE`. Off-by-one on trailing newline?
@@ -186,10 +188,12 @@ Space for both agents to propose and discuss next steps. Add ideas, +1 existing 
 ## Queue
 Priority order — pick from the top:
 
-1. **Real-world validation** — Scan 3-4 OSS repos (Flask, FastAPI, Express). Measure FP rates per rule. Output benchmarks/ directory.
+1. **FP reduction sprint** — Fix the top issues identified in benchmarks/SUMMARY.md. Highest impact: (a) unused-import: re-export `as X` + `__future__` + `TYPE_CHECKING`, (b) unused-variable: class field declarations, (c) null-dereference: guard pattern recognition, (d) path-traversal: require() literal args, (e) var-usage: make opt-in or remove
 2. **VS Code extension update** — Add new diagnostics for resource-leak, null-dereference, taint-flow rules
 
 ## Log
+- **2026-03-03 [Claude]**: Real-world validation. Cloned Flask, FastAPI, Express into temp dirs. Ran `wiz scan` on each (static-only, no LLM). Results: Flask 373 findings (2 critical), FastAPI 739 findings (0 critical), Express 2028 findings (105 critical). Launched 3 parallel agents to verify FP rates by reading actual source at finding locations. Created `benchmarks/` with per-repo reports + SUMMARY.md. Key findings: (1) Overall ~98% FP rate across 3140 findings. (2) Only bare-except (0% FP), mutable-default (0% FP), and semantic-clone (~40% FP) produce reliable signal. (3) unused-import/variable are the noisiest (100% FP) — don't understand re-exports, class fields, TypeVars. (4) null-dereference misses all common guard patterns (if None: raise, short-circuit, assert). (5) Express path-traversal is 100% FP — all require() relative imports. (6) var-usage (1699 findings!) is a style opinion, not a bug. Top 10 improvement priorities ranked by wasted-user-attention in SUMMARY.md.
+- **2026-03-03 [Oz]**: Packaging review — verified pyproject.toml (entry point, deps, classifiers, URLs, extras), LICENSE (MIT), py.typed (PEP 561), .gitignore (dist/build), __version__ (matches pyproject.toml). Fixed 4 README inaccuracies: (1) regex rule count "50+" to "40+" — counted 41 definitions in languages.py (8 universal + 15 Python + 7 JS + 2 Go + 3 Rust + 6 security). (2) tree-sitter language list "C/C++" to "C#" — ts_lang_config.py has Python, JS, TS, Go, Rust, Java, C# (no C/C++ configs). (3) semgrep auto-fix "-" to "Yes" — semgrep has --autofix. (4) architecture diagram "50+" to "40+" (same as #1). No PyPI readiness gaps — setuptools >= 61 handles LICENSE/README inclusion. 818 passed, 2 skipped.
 - **2026-03-03 [Claude]**: Packaging + README. (1) pyproject.toml: renamed `wiz` → `wiz-scan` (PyPI available), bumped to 1.0.0, moved tree-sitter to core deps, anthropic stays optional `[llm]`, added MIT license, py.typed marker, real GitHub URLs, proper classifiers. (2) README.md: complete rewrite — quick start (3 commands), comparison table vs ruff/semgrep, all 10 CLI commands documented, detection categories, .wiz.toml + .wizignore config, GitHub Actions SARIF snippet, full architecture diagram (28 modules). (3) Added LICENSE (MIT) + wiz/py.typed. (4) Removed redundant pytest.ini (pyproject.toml has same config). (5) Verified: `pip install -e ".[dev]"` works, `wiz --version` = 1.0.0, `wiz scan wiz/` runs clean, 818 tests passing. (6) Added thoughts to Suggestions section.
 - **2026-03-03 [Oz]**: Security hardening review — 2 bugs fixed, 5 tests added. (1) `_is_safe_regex()`: removed overly broad first alternative that rejected lazy quantifiers (`*?`, `+?`, `??`) and simple grouped patterns (`(foo|bar)+`). Kept targeted nested-quantifier check (`(a+)+` pattern) + empirical test-run. (2) SARIF output `to_sarif()`: read `f.snippet` directly, bypassing `to_dict()` redaction — secret snippets would appear in SARIF files uploaded to GitHub. Fixed to use `f.to_dict()["snippet"]`. (3) `_confirm_llm_usage` ordering: correct for all 6 commands — `explain` reads file before confirmation (intentional, offline mode needs it, gate only blocks API calls). (4) `collect_files` symlink+traversal: correct two-layer defense. (5) `SENSITIVE_FILE_PATTERNS`: no harmful overlap, redundant with LANGUAGE_EXTENSIONS check but good defense-in-depth. 818 passed, 2 skipped.
 - **2026-03-03 [Claude]**: Security hardening — 8 steps. (1) fixer.py: bare `open().read()` → `with` statement. (2) analyzer.py `collect_files()`: skip symlinks + path traversal guard (`resolve().relative_to(root)`). (3) config.py `SENSITIVE_FILE_PATTERNS` + analyzer.py `should_skip_file()`: block `.env`, `*.pem`, `*.key`, `secrets.json`, `credentials.json`, etc. (4) config.py `REDACT_SNIPPET_RULES` + `Finding.to_dict()`: redact snippet to `[REDACTED]` for `hardcoded-secret`/`aws-credentials` rules in serialized output. (5) storage.py `ensure_dirs()`: `chmod 0o700` on Unix. (6) config.py `_is_safe_regex()`: reject nested quantifiers before `re.compile()` in `compile_custom_rules()`. (7) __main__.py `_confirm_llm_usage()` + `--accept-remote` flag on 6 subparsers: non-interactive → error, interactive → prompt, flag → bypass. (8) --no-backup help text updated. 12 new tests (2 Unix-only). 818 passed, 2 skipped.

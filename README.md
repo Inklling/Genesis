@@ -24,7 +24,7 @@ wiz scan . --deep --accept-remote
 
 | Capability | ruff | semgrep | wiz |
 |---|---|---|---|
-| Regex pattern rules | - | Yes | Yes (50+) |
+| Regex pattern rules | - | Yes | Yes (40+) |
 | AST-based checks | Yes | Yes | Yes |
 | Cross-file taint flow | - | Yes | Yes (path-sensitive) |
 | Null dereference tracking | - | - | Yes |
@@ -32,7 +32,7 @@ wiz scan . --deep --accept-remote
 | Resource leak detection | - | - | Yes |
 | Dependency graph analysis | - | - | Yes |
 | LLM-powered deep analysis | - | - | Yes |
-| Auto-fix (deterministic + LLM) | Yes | - | Yes |
+| Auto-fix (deterministic + LLM) | Yes | Yes | Yes |
 | SARIF output for GitHub | - | Yes | Yes |
 
 Wiz's tree-sitter engine builds control flow graphs, runs fixed-point dataflow analysis, and tracks taint through branches and sanitizers. The LLM layer adds context-aware analysis that static tools can't do.
@@ -41,7 +41,7 @@ Wiz's tree-sitter engine builds control flow graphs, runs fixed-point dataflow a
 
 Python, JavaScript, TypeScript, Go, Rust, Java, C/C++, Ruby, PHP, C#, Swift, Kotlin, SQL, HTML, CSS, Bash, Pine Script.
 
-Tree-sitter semantic analysis (taint flow, null safety, type inference, CFG) is available for Python, JavaScript, TypeScript, Go, Rust, Java, and C/C++.
+Tree-sitter semantic analysis (taint flow, null safety, type inference, CFG) is available for Python, JavaScript, TypeScript, Go, Rust, Java, and C#.
 
 ## Commands
 
@@ -193,7 +193,7 @@ wiz/
 ├── __main__.py          CLI: scan, debug, optimize, analyze, fix, explain
 ├── analyzer.py          Scan orchestration, file collection, caching
 ├── detector.py          Static analysis engine (regex + AST + tree-sitter)
-├── languages.py         50+ regex pattern rules
+├── languages.py         40+ regex pattern rules
 ├── fixer.py             9 deterministic fixers + LLM fix orchestration
 ├── depgraph.py          Dependency graph (import resolution, cycles, metrics)
 ├── project.py           Cross-file analysis orchestration
