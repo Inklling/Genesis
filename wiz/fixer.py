@@ -494,8 +494,8 @@ def apply_fixes(
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
     except OSError as e:
-        for f in fixes:  # type: ignore[assignment]
-            f.status = FixStatus.FAILED  # type: ignore[attr-defined]
+        for fix in fixes:
+            fix.status = FixStatus.FAILED
         print(f"  [fix] Cannot read {filepath}: {e}", file=sys.stderr)
         return fixes
 
@@ -638,9 +638,9 @@ def verify_fixes(filepath: str, language: str,
     new = post_buckets - pre_buckets
 
     new_findings = []
-    for f in post_findings:  # type: ignore[assignment]
-        if (f.line // 5, f.rule) in new:  # type: ignore[attr-defined]
-            new_findings.append(f.to_dict())  # type: ignore[attr-defined]
+    for finding in post_findings:
+        if (finding.line // 5, finding.rule) in new:
+            new_findings.append(finding.to_dict())
 
     return {
         "resolved": len(resolved),

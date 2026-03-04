@@ -492,7 +492,7 @@ def _merge_chunked_results(results: list[dict]) -> dict:
 
     Deduplicates findings by (line, title) and merges quick_wins.
     """
-    merged = {
+    merged: dict[str, Any] = {
         "summary": "",
         "findings": [],
         "quick_wins": [],
@@ -508,10 +508,10 @@ def _merge_chunked_results(results: list[dict]) -> dict:
             key = (f.get("line"), f.get("title", ""))
             if key not in seen_findings:
                 seen_findings.add(key)
-                merged["findings"].append(f)  # type: ignore[attr-defined]
+                merged["findings"].append(f)
         for qw in r.get("quick_wins", []):
             if qw not in merged["quick_wins"]:
-                merged["quick_wins"].append(qw)  # type: ignore[attr-defined]
+                merged["quick_wins"].append(qw)
 
     merged["summary"] = " | ".join(summaries) if summaries else "No issues found"
     return merged

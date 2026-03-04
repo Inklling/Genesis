@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Optional, TypeAlias
+from typing import Optional
 import os
 import re
 import sys
@@ -325,11 +325,6 @@ class FixReport:
         if self.verification is not None:
             d["verification"] = self.verification
         return d
-
-
-# ─── Type aliases ────────────────────────────────────────────────────
-Findings: TypeAlias = list[Finding]
-SourceBytes: TypeAlias = bytes
 
 
 # LLM config

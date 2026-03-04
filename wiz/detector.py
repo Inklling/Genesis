@@ -299,9 +299,9 @@ def _check_imports(tree: ast.AST, filepath: str, findings: list[Finding]):
             used_names.add(node.id)
         elif isinstance(node, ast.Attribute):
             # Track the root of attribute chains (e.g., 'os' in 'os.path.join')
-            root = node
+            root: ast.expr = node
             while isinstance(root, ast.Attribute):
-                root = root.value  # type: ignore[assignment]
+                root = root.value
             if isinstance(root, ast.Name):
                 used_names.add(root.id)
 
