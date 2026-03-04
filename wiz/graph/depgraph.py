@@ -123,7 +123,7 @@ class DepGraph:
         result.extend(remaining)
         return result
 
-    def rank_by_importance(self) -> list[tuple[str, float]]:
+    def rank_by_importance(self) -> list[tuple[str, int]]:
         """Rank files by weighted fan_in/fan_out score.
 
         Score = fan_in * 2 + fan_out (being imported is more important).
@@ -133,7 +133,7 @@ class DepGraph:
             score = node.fan_in * 2 + node.fan_out
             ranked.append((path, score))
         ranked.sort(key=lambda x: (-x[1], x[0]))
-        return ranked  # type: ignore[return-value]
+        return ranked
 
     def to_dict(self) -> dict:
         return {

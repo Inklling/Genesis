@@ -82,6 +82,7 @@ def _propagate_taint(
     semantics: FileSemantics,
     initial_tainted: set[str],
     func_scope_ids: set[int],
+    config: LanguageConfig,
 ) -> dict[str, list[tuple[str, int]]]:
     """Propagate taint through assignments within function scope.
 
@@ -91,8 +92,10 @@ def _propagate_taint(
         name: [] for name in initial_tainted
     }
 
-    # Simple propagation: if RHS contains a tainted variable, LHS becomes tainted
-    # Iterate until no new taint is added (fixed-point)
+    # Propagation with sanitization: if RHS contains a tainted variable, LHS
+    # becomes tainted — UNLESS the RHS passes through a sanitizer, in which
+    # case taint is removed (flow-sensitive reassignment).
+    # Iterate until fixed-point.
     changed = True
     max_iters = 10  # prevent infinite loops
     iteration = 0
@@ -104,12 +107,28 @@ def _propagate_taint(
         for asgn in semantics.assignments:
             if asgn.scope_id not in func_scope_ids:
                 continue
-            if asgn.name in tainted:
-                continue
             if asgn.is_parameter:
                 continue
 
             rhs = asgn.value_text
+
+            # Check if RHS passes through a sanitizer
+            is_sanitized = any(
+                sanitizer in rhs
+                for sanitizer in config.taint_sanitizer_patterns
+            )
+
+            if is_sanitized:
+                # Sanitizer clears taint — remove from tainted set
+                if asgn.name in tainted:
+                    del tainted[asgn.name]
+                    changed = True
+                continue
+
+            # Skip already-tainted vars for propagation (no new info)
+            if asgn.name in tainted:
+                continue
+
             for tainted_name in list(tainted.keys()):
                 # Check if tainted name appears in RHS
                 if re.search(r'\b' + re.escape(tainted_name) + r'\b', rhs):
@@ -284,7 +303,7 @@ def analyze_taint(
 
         # 2. Propagate taint
         initial_tainted = {s.variable for s in sources}
-        taint_chains = _propagate_taint(semantics, initial_tainted, func_scope_ids)
+        taint_chains = _propagate_taint(semantics, initial_tainted, func_scope_ids, config)
         tainted_vars = set(taint_chains.keys())
 
         if not tainted_vars:

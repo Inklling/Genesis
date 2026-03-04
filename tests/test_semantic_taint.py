@@ -339,6 +339,35 @@ def foo():
         f = findings[0]
         assert "x" in f.message
 
+    def test_reassignment_through_sanitizer_clears_taint(self):
+        """A tainted variable reassigned via a sanitizer should NOT remain tainted.
+
+        Regression test: previously, _propagate_taint skipped already-tainted vars
+        on reassignment, so sanitization via reassignment was ignored.
+        """
+        code = '''
+def process():
+    user_input = input("name: ")
+    sanitized = html.escape(user_input)
+    eval(sanitized)
+'''
+        findings = _analyze_python(code)
+        # sanitized should NOT be tainted — html.escape is a sanitizer
+        assert len(findings) == 0
+
+    def test_tainted_var_reassigned_clean_clears_propagation(self):
+        """If a tainted var is reassigned to a sanitized value, downstream should be clean."""
+        code = '''
+def process():
+    data = input("data: ")
+    data = bleach.clean(data)
+    query = data
+    cursor.execute(query)
+'''
+        findings = _analyze_python(code)
+        # data was sanitized by bleach.clean, so query (assigned from data) should be clean
+        assert len(findings) == 0
+
 
 # ─── End-to-End Scenarios ────────────────────────────────────────────────────
 

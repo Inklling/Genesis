@@ -1,11 +1,14 @@
 """Fix engine — deterministic fixers, LLM fix orchestration, fix application."""
 
+import logging
 import os
 import re
 import shutil
 import sys
 import tempfile
 from typing import Optional, Protocol
+
+logger = logging.getLogger(__name__)
 
 from .config import (
     Finding, Fix, FixReport, FixSource, FixStatus, Severity,
@@ -392,7 +395,8 @@ def _fix_exception_swallowed(line: str, finding: Finding, content: str) -> Optio
 
     # Replace pass with pass + TODO
     pass_line = lines[pass_idx]
-    pass_indent = re.match(r'^(\s*)', pass_line).group(1)  # type: ignore[union-attr]
+    m = re.match(r'^(\s*)', pass_line)
+    pass_indent = m.group(1) if m else ""
     new_pass = f"{pass_indent}pass  # TODO: handle this exception\n"
     return Fix(
         file=finding.file, line=pass_idx + 1, rule=finding.rule,
@@ -437,7 +441,7 @@ def generate_llm_fixes(
         return []
 
     try:
-        from .llm import fix_file as llm_fix_file, CostTracker
+        from .llm import fix_file as llm_fix_file, CostTracker, LLMError
         if cost_tracker is None:
             cost_tracker = CostTracker()
 
@@ -471,8 +475,8 @@ def generate_llm_fixes(
 
         return fixes
 
-    except Exception as e:
-        print(f"  [fix] LLM fix generation failed: {e}", file=sys.stderr)
+    except (LLMError, OSError, ValueError) as e:
+        logger.warning("LLM fix generation failed: %s", e)
         return []
 
 
@@ -494,9 +498,9 @@ def apply_fixes(
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
     except OSError as e:
-        for f in fixes:  # type: ignore[assignment]
-            f.status = FixStatus.FAILED  # type: ignore[attr-defined]
-        print(f"  [fix] Cannot read {filepath}: {e}", file=sys.stderr)
+        for fix in fixes:
+            fix.status = FixStatus.FAILED
+        logger.warning("Cannot read %s: %s", filepath, e)
         return fixes
 
     lines = content.splitlines(keepends=True)
@@ -570,7 +574,7 @@ def apply_fixes(
             try:
                 shutil.copy2(filepath, backup_path)
             except OSError as e:
-                print(f"  [fix] Warning: could not create backup: {e}", file=sys.stderr)
+                logger.warning("Could not create backup: %s", e)
 
         # Atomic write: write to temp file, then rename
         try:
@@ -584,15 +588,14 @@ def apply_fixes(
                     os.replace(tmp_path, filepath)
                 else:
                     os.rename(tmp_path, filepath)
-            except Exception:
-                # Clean up temp file on error
+            except (OSError, ValueError):  # cleanup-and-reraise for temp file
                 try:
                     os.unlink(tmp_path)
                 except OSError:
                     pass
                 raise
         except OSError as e:
-            print(f"  [fix] Error writing {filepath}: {e}", file=sys.stderr)
+            logger.warning("Error writing %s: %s", filepath, e)
             for fix in fixes:
                 if fix.status == FixStatus.APPLIED:
                     fix.status = FixStatus.FAILED
@@ -638,9 +641,9 @@ def verify_fixes(filepath: str, language: str,
     new = post_buckets - pre_buckets
 
     new_findings = []
-    for f in post_findings:  # type: ignore[assignment]
-        if (f.line // 5, f.rule) in new:  # type: ignore[attr-defined]
-            new_findings.append(f.to_dict())  # type: ignore[attr-defined]
+    for finding in post_findings:
+        if (finding.line // 5, finding.rule) in new:
+            new_findings.append(finding.to_dict())
 
     return {
         "resolved": len(resolved),

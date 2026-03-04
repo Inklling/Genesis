@@ -347,38 +347,52 @@ class _Extractor:
                         is_parameter=False, is_augmented=False,
                     ))
 
+    def _record_assignment(
+        self, name: str, node: Any, rhs_type: str = "", rhs_text: str = "",
+        is_augmented: bool = False, value_node_type: str | None = None,
+    ) -> None:
+        """Record a variable assignment. Shared by all language handlers."""
+        self.result.assignments.append(Assignment(
+            name=name, line=_line(node), scope_id=self._current_scope,
+            value_node_type=value_node_type or rhs_type,
+            value_text=rhs_text,
+            is_parameter=False, is_augmented=is_augmented,
+        ))
+
+    def _extract_lhs_rhs(self, node: Any) -> tuple[Any | None, Any | None]:
+        """Extract left/right children from an assignment node."""
+        left = node.child_by_field_name("left")
+        right = node.child_by_field_name("right")
+        return left, right
+
+    def _rhs_info(self, right: Any) -> tuple[str, str]:
+        """Extract type and text from an RHS node."""
+        rhs_type = right.type if right else ""
+        rhs_text = _get_text(right, self.src)[:100] if right else ""
+        return rhs_type, rhs_text
+
     def _handle_python_assignment(self, node: Any, is_augmented: bool) -> None:
         if is_augmented:
-            left = node.child_by_field_name("left")
+            left, _ = self._extract_lhs_rhs(node)
             if left and left.type == "identifier":
                 name = _get_text(left, self.src)
-                self.result.assignments.append(Assignment(
-                    name=name, line=_line(node), scope_id=self._current_scope,
-                    value_node_type="augmented", value_text="",
-                    is_parameter=False, is_augmented=True,
-                ))
-                # Also a read reference
+                self._record_assignment(name, node, value_node_type="augmented", is_augmented=True)
                 self.result.references.append(NameReference(
                     name=name, line=_line(node), scope_id=self._current_scope,
                     context="read",
                 ))
         else:
-            # Regular assignment
-            left = node.child_by_field_name("left")
-            right = node.child_by_field_name("right")
+            left, right = self._extract_lhs_rhs(node)
 
             if left is None:
-                # Try positional children for Python assignment
                 children = [c for c in node.children if c.is_named]
                 if len(children) >= 2:
-                    left = children[0]
-                    right = children[-1]
+                    left, right = children[0], children[-1]
 
             if left is None:
                 return
 
-            rhs_type = right.type if right else ""
-            rhs_text = _get_text(right, self.src)[:100] if right else ""
+            rhs_type, rhs_text = self._rhs_info(right)
 
             # Check for self.attr = ...
             self_kw = self.config.self_keyword
@@ -387,106 +401,51 @@ class _Extractor:
                 attr_node = left.child_by_field_name("attribute")
                 if obj_node and _get_text(obj_node, self.src) == self_kw and attr_node:
                     attr_name = _get_text(attr_node, self.src)
-                    self.result.assignments.append(Assignment(
-                        name=attr_name, line=_line(node), scope_id=self._current_scope,
-                        value_node_type="self_attr", value_text=rhs_text,
-                        is_parameter=False, is_augmented=False,
-                    ))
+                    self._record_assignment(attr_name, node, rhs_text=rhs_text, value_node_type="self_attr")
                     return
 
             if left.type == "identifier":
-                name = _get_text(left, self.src)
-                self.result.assignments.append(Assignment(
-                    name=name, line=_line(node), scope_id=self._current_scope,
-                    value_node_type=rhs_type, value_text=rhs_text,
-                    is_parameter=False, is_augmented=False,
-                ))
-            elif left.type == "pattern_list" or left.type == "tuple_pattern":
-                # Tuple unpacking: a, b = ...
+                self._record_assignment(_get_text(left, self.src), node, rhs_type, rhs_text)
+            elif left.type in ("pattern_list", "tuple_pattern"):
                 for child in left.children:
                     if child.type == "identifier":
-                        name = _get_text(child, self.src)
-                        self.result.assignments.append(Assignment(
-                            name=name, line=_line(node), scope_id=self._current_scope,
-                            value_node_type=rhs_type, value_text=rhs_text,
-                            is_parameter=False, is_augmented=False,
-                        ))
+                        self._record_assignment(_get_text(child, self.src), node, rhs_type, rhs_text)
 
     def _handle_js_assignment(self, node: Any, is_augmented: bool) -> None:
         if node.type == "variable_declarator":
             name_node = node.child_by_field_name("name")
             value_node = node.child_by_field_name("value")
             if name_node and name_node.type == "identifier":
-                name = _get_text(name_node, self.src)
-                rhs_type = value_node.type if value_node else ""
-                rhs_text = _get_text(value_node, self.src)[:100] if value_node else ""
-                self.result.assignments.append(Assignment(
-                    name=name, line=_line(node), scope_id=self._current_scope,
-                    value_node_type=rhs_type, value_text=rhs_text,
-                    is_parameter=False, is_augmented=False,
-                ))
+                rhs_type, rhs_text = self._rhs_info(value_node)
+                self._record_assignment(_get_text(name_node, self.src), node, rhs_type, rhs_text)
         elif node.type in ("assignment_expression", "augmented_assignment_expression"):
-            left = node.child_by_field_name("left")
-            right = node.child_by_field_name("right")
+            left, right = self._extract_lhs_rhs(node)
             if left and left.type == "identifier":
-                name = _get_text(left, self.src)
-                rhs_type = right.type if right else ""
-                rhs_text = _get_text(right, self.src)[:100] if right else ""
-                self.result.assignments.append(Assignment(
-                    name=name, line=_line(node), scope_id=self._current_scope,
-                    value_node_type=rhs_type, value_text=rhs_text,
-                    is_parameter=False, is_augmented=is_augmented,
-                ))
+                rhs_type, rhs_text = self._rhs_info(right)
+                self._record_assignment(_get_text(left, self.src), node, rhs_type, rhs_text, is_augmented)
 
     def _handle_go_assignment(self, node: Any, is_augmented: bool) -> None:
-        if node.type == "short_var_declaration":
-            left = node.child_by_field_name("left")
-            right = node.child_by_field_name("right")
-            if left:
-                for child in left.children:
-                    if child.type == "identifier":
-                        name = _get_text(child, self.src)
-                        rhs_type = right.type if right else ""
-                        self.result.assignments.append(Assignment(
-                            name=name, line=_line(node), scope_id=self._current_scope,
-                            value_node_type=rhs_type, value_text="",
-                            is_parameter=False, is_augmented=False,
-                        ))
-        elif node.type == "assignment_statement":
-            left = node.child_by_field_name("left")
-            right = node.child_by_field_name("right")
-            if left:
-                for child in left.children:
-                    if child.type == "identifier":
-                        name = _get_text(child, self.src)
-                        rhs_type = right.type if right else ""
-                        self.result.assignments.append(Assignment(
-                            name=name, line=_line(node), scope_id=self._current_scope,
-                            value_node_type=rhs_type, value_text="",
-                            is_parameter=False, is_augmented=is_augmented,
-                        ))
+        left, right = self._extract_lhs_rhs(node)
+        if left:
+            rhs_type = right.type if right else ""
+            for child in left.children:
+                if child.type == "identifier":
+                    self._record_assignment(
+                        _get_text(child, self.src), node, rhs_type,
+                        is_augmented=(is_augmented and node.type != "short_var_declaration"),
+                    )
 
     def _handle_rust_assignment(self, node: Any, is_augmented: bool) -> None:
         if node.type == "let_declaration":
             pat = node.child_by_field_name("pattern")
             value = node.child_by_field_name("value")
             if pat and pat.type == "identifier":
-                name = _get_text(pat, self.src)
                 rhs_type = value.type if value else ""
-                self.result.assignments.append(Assignment(
-                    name=name, line=_line(node), scope_id=self._current_scope,
-                    value_node_type=rhs_type, value_text="",
-                    is_parameter=False, is_augmented=False,
-                ))
+                self._record_assignment(_get_text(pat, self.src), node, rhs_type)
         elif node.type in ("assignment_expression", "compound_assignment_expr"):
-            left = node.child_by_field_name("left")
+            left, _ = self._extract_lhs_rhs(node)
             if left and left.type == "identifier":
-                name = _get_text(left, self.src)
-                self.result.assignments.append(Assignment(
-                    name=name, line=_line(node), scope_id=self._current_scope,
-                    value_node_type="", value_text="",
-                    is_parameter=False, is_augmented=is_augmented,
-                ))
+                self._record_assignment(_get_text(left, self.src), node, is_augmented=is_augmented)
 
     def _handle_java_assignment(self, node: Any, is_augmented: bool) -> None:
         if node.type == "local_variable_declaration":
@@ -495,45 +454,24 @@ class _Extractor:
                     name_node = child.child_by_field_name("name")
                     value_node = child.child_by_field_name("value")
                     if name_node and name_node.type == "identifier":
-                        name = _get_text(name_node, self.src)
                         rhs_type = value_node.type if value_node else ""
-                        self.result.assignments.append(Assignment(
-                            name=name, line=_line(node), scope_id=self._current_scope,
-                            value_node_type=rhs_type, value_text="",
-                            is_parameter=False, is_augmented=False,
-                        ))
+                        self._record_assignment(_get_text(name_node, self.src), node, rhs_type)
         elif node.type == "assignment_expression":
-            left = node.child_by_field_name("left")
+            left, _ = self._extract_lhs_rhs(node)
             if left and left.type == "identifier":
-                name = _get_text(left, self.src)
-                self.result.assignments.append(Assignment(
-                    name=name, line=_line(node), scope_id=self._current_scope,
-                    value_node_type="", value_text="",
-                    is_parameter=False, is_augmented=is_augmented,
-                ))
+                self._record_assignment(_get_text(left, self.src), node, is_augmented=is_augmented)
 
     def _handle_csharp_assignment(self, node: Any, is_augmented: bool) -> None:
-        # Similar to Java
         if node.type == "variable_declarator":
             name_node = node.child_by_field_name("name") or (
                 node.children[0] if node.children and node.children[0].type == "identifier" else None
             )
             if name_node and name_node.type == "identifier":
-                name = _get_text(name_node, self.src)
-                self.result.assignments.append(Assignment(
-                    name=name, line=_line(node), scope_id=self._current_scope,
-                    value_node_type="", value_text="",
-                    is_parameter=False, is_augmented=False,
-                ))
+                self._record_assignment(_get_text(name_node, self.src), node)
         elif node.type == "assignment_expression":
-            left = node.child_by_field_name("left")
+            left, _ = self._extract_lhs_rhs(node)
             if left and left.type == "identifier":
-                name = _get_text(left, self.src)
-                self.result.assignments.append(Assignment(
-                    name=name, line=_line(node), scope_id=self._current_scope,
-                    value_node_type="", value_text="",
-                    is_parameter=False, is_augmented=is_augmented,
-                ))
+                self._record_assignment(_get_text(left, self.src), node, is_augmented=is_augmented)
 
     def _handle_call(self, node: Any) -> None:
         func_node = node.child_by_field_name("function")
@@ -740,8 +678,8 @@ def extract_semantics(content: str, filepath: str, language: str) -> Optional[Fi
         return None
 
     try:
-        parser = get_parser(config.ts_language_name)  # type: ignore[arg-type]
-    except Exception:
+        parser = get_parser(config.ts_language_name)  # type: ignore[arg-type]  # tree-sitter-language-pack has no stubs
+    except (LookupError, ValueError, RuntimeError):
         return None
 
     source_bytes = content.encode("utf-8")

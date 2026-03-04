@@ -4,16 +4,30 @@ import stat
 import sys
 from pathlib import Path
 
+from .config import is_bundled, get_exe_path
+
 
 HOOK_MARKER = "# wiz-managed-hook"
 
-HOOK_SCRIPT = """\
+
+def _wiz_command() -> str:
+    """Return the shell command to invoke wiz, depending on install mode."""
+    if is_bundled():
+        return str(get_exe_path())
+    return "python -m wiz"
+
+
+def _make_hook_script() -> str:
+    """Generate the hook script with the correct wiz invocation."""
+    cmd = _wiz_command()
+    uninstall_hint = f"{cmd} hook uninstall"
+    return f"""\
 #!/bin/sh
 # wiz-managed-hook
 # Pre-commit hook installed by wiz — blocks commits with critical issues.
-# To uninstall: python -m wiz hook uninstall
+# To uninstall: {uninstall_hint}
 
-python -m wiz scan . --diff --min-severity warning --output text
+{cmd} scan . --diff --min-severity warning --output text
 status=$?
 
 if [ $status -eq 2 ]; then
@@ -76,7 +90,7 @@ def install_hook(root: Path, force: bool = False) -> str:
     if hook.exists():
         if _is_wiz_hook(hook):
             # Update existing wiz hook
-            hook.write_text(HOOK_SCRIPT, encoding="utf-8")
+            hook.write_text(_make_hook_script(), encoding="utf-8")
             return f"Updated wiz pre-commit hook at {hook}"
         elif not force:
             raise FileExistsError(
@@ -85,7 +99,7 @@ def install_hook(root: Path, force: bool = False) -> str:
             )
         # force=True: overwrite foreign hook
 
-    hook.write_text(HOOK_SCRIPT, encoding="utf-8")
+    hook.write_text(_make_hook_script(), encoding="utf-8")
 
     # Make executable (Unix)
     if sys.platform != "win32":

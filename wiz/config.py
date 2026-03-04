@@ -1,13 +1,70 @@
 """Data structures, enums, paths, and LLM configuration."""
 
+import logging
+import sys
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Optional, TypeAlias
 import os
 import re
-import sys
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
+
+def is_bundled() -> bool:
+    """Return True if running as a Nuitka-compiled standalone binary."""
+    return "__compiled__" in globals() or getattr(sys, "frozen", False)
+
+
+def get_exe_path() -> Path:
+    """Return the path to the running executable (for bundled mode)."""
+    return Path(sys.executable).resolve()
+
+
+def patch_tree_sitter_for_bundled() -> None:
+    """Pre-load tree-sitter .pyd bindings into sys.modules for Nuitka onefile mode.
+
+    In bundled mode, the .pyd data files are extracted to a temp directory.
+    Nuitka's import system doesn't know about them (they're data files, not
+    compiled modules), so import_module() fails. We use spec_from_file_location
+    to manually load each .pyd and register it in sys.modules before any
+    tree-sitter code runs.
+    """
+    if not is_bundled():
+        return
+
+    import importlib
+    import importlib.util
+
+    try:
+        tslp = importlib.import_module("tree_sitter_language_pack")
+    except ImportError:
+        return
+
+    tslp_file = getattr(tslp, "__file__", None)
+    if not tslp_file:
+        return
+
+    bindings_dir = Path(tslp_file).parent / "bindings"
+    if not bindings_dir.is_dir():
+        return
+
+    # Pre-load each .pyd binding into sys.modules so import_module() finds them
+    for pyd_path in bindings_dir.glob("*.pyd"):
+        lang_name = pyd_path.stem  # e.g. "python", "javascript"
+        mod_name = f"tree_sitter_language_pack.bindings.{lang_name}"
+        if mod_name in sys.modules:
+            continue
+        spec = importlib.util.spec_from_file_location(mod_name, str(pyd_path))
+        if spec and spec.loader:
+            try:
+                mod = importlib.util.module_from_spec(spec)
+                sys.modules[mod_name] = mod
+                spec.loader.exec_module(mod)
+            except Exception:
+                sys.modules.pop(mod_name, None)
 
 
 class Severity(Enum):
@@ -465,8 +522,8 @@ def load_project_config(root: Path) -> dict:
         with open(config_file, "rb") as f:
             data = tomllib.load(f)
         return data.get("wiz", {})
-    except Exception as e:
-        print(f"Warning: could not parse {config_file}: {e}", file=sys.stderr)
+    except (ValueError, OSError, KeyError) as e:  # TOMLDecodeError is subclass of ValueError
+        logger.warning("Could not parse %s: %s", config_file, e)
         return {}
 
 
@@ -513,8 +570,6 @@ def compile_custom_rules(config: dict) -> list[CustomRule]:
     Returns list of (re.Pattern, Severity, Category, name, message, suggestion, languages) tuples.
     Invalid rules are silently skipped with a stderr warning.
     """
-    import sys as _sys
-
     rules_data = config.get("rules", [])
     if not rules_data:
         return []
@@ -540,36 +595,31 @@ def compile_custom_rules(config: dict) -> list[CustomRule]:
         message = rule.get("message")
 
         if not pattern_str or not name or not message:
-            print(f"  [config] Skipping custom rule #{i}: missing pattern, name, or message",
-                  file=_sys.stderr)
+            logger.warning("Skipping custom rule #%d: missing pattern, name, or message", i)
             continue
 
         # ReDoS safety check
         if not _is_safe_regex(pattern_str):
-            print(f"  [config] Skipping custom rule '{name}': potentially unsafe regex (ReDoS risk)",
-                  file=_sys.stderr)
+            logger.warning("Skipping custom rule '%s': potentially unsafe regex (ReDoS risk)", name)
             continue
 
         # Compile pattern
         try:
             compiled_pattern = re.compile(pattern_str)
         except re.error as e:
-            print(f"  [config] Skipping custom rule '{name}': invalid regex: {e}",
-                  file=_sys.stderr)
+            logger.warning("Skipping custom rule '%s': invalid regex: %s", name, e)
             continue
 
         # Parse severity (default: warning)
         severity = severity_map.get(rule.get("severity", "warning"))
         if severity is None:
-            print(f"  [config] Skipping custom rule '{name}': invalid severity '{rule.get('severity')}'",
-                  file=_sys.stderr)
+            logger.warning("Skipping custom rule '%s': invalid severity '%s'", name, rule.get('severity'))
             continue
 
         # Parse category (default: bug)
         category = category_map.get(rule.get("category", "bug"))
         if category is None:
-            print(f"  [config] Skipping custom rule '{name}': invalid category '{rule.get('category')}'",
-                  file=_sys.stderr)
+            logger.warning("Skipping custom rule '%s': invalid category '%s'", name, rule.get('category'))
             continue
 
         suggestion = rule.get("suggestion")

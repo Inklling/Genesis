@@ -16,7 +16,7 @@ def _ensure_utf8() -> None:
     if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
         try:
             sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
+        except (OSError, ValueError):
             pass  # If reconfigure fails, continue with default encoding
 
 
@@ -89,15 +89,21 @@ def print_file_analysis(fa: FileAnalysis) -> None:
         print_finding(f, show_file=False)
 
 
-def print_scan_summary(report: ScanReport) -> None:
+def print_scan_summary(report: ScanReport, duration: float | None = None) -> None:
     """Print the scan summary."""
     print()
     print(_c("bold", "═" * 70))
-    print(_c("bold", f"  Scan Complete — {report.mode.upper()} mode"))
+    timing = f" in {duration:.1f}s" if duration is not None else ""
+    print(_c("bold", f"  Scan Complete — {report.mode.upper()} mode{timing}"))
     print(_c("bold", "═" * 70))
     print()
     print(f"  Files scanned:  {report.files_scanned}")
     print(f"  Files skipped:  {report.files_skipped}")
+    if report.files_scanned == 0:
+        print()
+        print(f"  {_c('yellow', 'No supported files found.')}")
+        print(f"  Wiz scans: Python, JavaScript, TypeScript, C#, Java, Go, Rust, C/C++, and more.")
+        print(f"  Use 'wiz init' to create a .wizignore, or check your --lang filter.")
     print()
     print(f"  {_c('red', f'Critical:  {report.critical}')}")
     print(f"  {_c('yellow', f'Warnings:  {report.warnings}')}")
@@ -125,14 +131,14 @@ def print_scan_summary(report: ScanReport) -> None:
     print()
 
 
-def print_report(report: ScanReport, verbose: bool = False) -> None:
+def print_report(report: ScanReport, verbose: bool = False, duration: float | None = None) -> None:
     """Print full report — file analyses + summary."""
     # Show files with findings (or all files in verbose mode)
     for fa in report.file_analyses:
         if fa.findings or verbose:
             print_file_analysis(fa)
 
-    print_scan_summary(report)
+    print_scan_summary(report, duration=duration)
 
 
 CONFIDENCE_BADGE = {
@@ -591,7 +597,7 @@ def to_sarif(report: ScanReport) -> dict:
             # Add snippet if available (redact secrets)
             snippet = f.to_dict()["snippet"]
             if snippet:
-                result["locations"][0]["physicalLocation"]["region"]["snippet"] = {  # type: ignore[index]
+                result["locations"][0]["physicalLocation"]["region"]["snippet"] = {  # type: ignore[index]  # SARIF result dict is dynamically built
                     "text": snippet
                 }
             
@@ -607,7 +613,7 @@ def to_sarif(report: ScanReport) -> dict:
             
             # Add confidence property if available (LLM findings)
             if f.confidence:
-                result.setdefault("properties", {})["confidence"] = f.confidence.value  # type: ignore[index]
+                result.setdefault("properties", {})["confidence"] = f.confidence.value  # type: ignore[index]  # SARIF result dict is dynamically built
             
             results.append(result)
     

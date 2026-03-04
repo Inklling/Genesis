@@ -411,7 +411,7 @@ def test_safe_pattern_accepted():
     assert _is_safe_regex(r"(ab)+") is True
 
 
-def test_redos_rejected_in_compile_custom_rules(capsys):
+def test_redos_rejected_in_compile_custom_rules(caplog):
     """Test that compile_custom_rules skips ReDoS-prone rules."""
     config = {
         "rules": [{
@@ -420,7 +420,7 @@ def test_redos_rejected_in_compile_custom_rules(capsys):
             "message": "This is unsafe",
         }]
     }
-    rules = compile_custom_rules(config)
+    with caplog.at_level("WARNING", logger="wiz.config"):
+        rules = compile_custom_rules(config)
     assert len(rules) == 0
-    captured = capsys.readouterr()
-    assert "ReDoS" in captured.err
+    assert "ReDoS" in caplog.text

@@ -1,6 +1,7 @@
 """Orchestrator: static → LLM pipeline, file/directory scanning."""
 
 import fnmatch
+import logging
 import re
 import subprocess
 import sys
@@ -9,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+logger = logging.getLogger(__name__)
 
 from .config import (
     Finding, FileAnalysis, ScanReport, Severity, Confidence, Category, Source,
@@ -157,10 +160,10 @@ def _analyze_single_file(
     except OSError:
         return None, None, True
 
-    findings = analyze_file_static(fp_str, content, lang, custom_rules=custom_rules)  # type: ignore[arg-type]
+    findings = analyze_file_static(fp_str, content, lang or "", custom_rules=custom_rules)
     fa = FileAnalysis(
         path=fp_str,
-        language=lang,  # type: ignore[arg-type]
+        language=lang or "",
         lines=content.count("\n") + 1,
         findings=findings,
         file_hash=current_hash,
@@ -220,8 +223,8 @@ def scan_quick(
                                 cache[str(filepath)] = updated_hash
                     elif is_error:
                         skipped += 1
-                except Exception as e:
-                    print(f"Error analyzing {filepath}: {e}", file=sys.stderr)
+                except Exception as e:  # future.result() — any worker error must be caught
+                    logger.warning("Error analyzing %s: %s", filepath, e)
                     skipped += 1
 
     if use_cache:
@@ -324,7 +327,7 @@ def scan_deep(
             skipped += 1
             continue
         line_count = content.count("\n") + 1
-        static_findings = analyze_file_static(fp_str, content, lang, custom_rules=custom_rules)  # type: ignore[arg-type]
+        static_findings = analyze_file_static(fp_str, content, lang or "", custom_rules=custom_rules)
         file_data.append((fp_str, lang, content, line_count, static_findings, fhash))
 
     # Phase 2: LLM enrichment with parallel workers
@@ -353,7 +356,7 @@ def scan_deep(
                     print()
         except LLMError as e:
             with print_lock:
-                print(f"    LLM error: {e}", file=sys.stderr)
+                logger.warning("LLM error for %s: %s", fp_str, e)
 
         merged = _merge_findings(static_findings, llm_findings)
 
@@ -388,8 +391,8 @@ def scan_deep(
             for future in as_completed(futures):
                 try:
                     future.result()
-                except Exception as e:
-                    print(f"    Worker error: {e}", file=sys.stderr)
+                except Exception as e:  # future.result() — any worker error must be caught
+                    logger.warning("Worker error: %s", e)
 
     total_findings = sum(len(fa.findings) for fa in analyses)
     critical = sum(fa.critical_count for fa in analyses)
@@ -720,7 +723,10 @@ def scan_diff(
     """
     git_root = _find_git_root(root)
     if not git_root:
-        raise ValueError("Not a git repository")
+        raise ValueError(
+            "Not a git repository (or git is not installed). "
+            "--diff requires git on PATH."
+        )
 
     ref = _resolve_base_ref(git_root, base_ref)
     if not ref:

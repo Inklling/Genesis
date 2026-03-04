@@ -1,10 +1,13 @@
 """Project analysis orchestrator — ties depgraph + LLM + existing infrastructure."""
 
 import ast as ast_mod
+import logging
 import re
 import sys
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from ..config import (
     FileAnalysis, CrossFileFinding, ProjectAnalysis,
@@ -248,8 +251,8 @@ def analyze_project(
                     src_bytes = content.encode("utf-8")
                     type_maps[rel] = infer_types(sem, src_bytes, lang_cfg)
             # type_maps used by null safety checks in per-file analysis
-        except Exception:
-            pass  # graceful degradation
+        except (ValueError, OSError, AttributeError) as e:
+            logger.debug("Cross-file type inference skipped: %s", e)
 
     # 5. No-LLM mode: return graph + metrics + static cross-file findings
     if not use_llm:
@@ -280,7 +283,7 @@ def analyze_project(
         )
 
     # 6. LLM analysis
-    from ..llm import CostTracker, analyze_file_with_context, synthesize_project
+    from ..llm import CostTracker, LLMError, analyze_file_with_context, synthesize_project
     from ..llm_focus import build_focus_areas
 
     cost_tracker = CostTracker()
@@ -332,8 +335,8 @@ def analyze_project(
                 static_findings=static_findings,
                 cost_tracker=cost_tracker,
             )
-        except Exception as e:
-            print(f"    LLM error: {e}", file=sys.stderr)
+        except (LLMError, OSError, ValueError) as e:
+            logger.warning("LLM error for %s: %s", rel_path, e)
             result = {"cross_file_findings": [], "local_findings": []}
 
         # Collect cross-file findings
@@ -360,8 +363,8 @@ def analyze_project(
             all_cross_file_findings=all_cross_file_findings,
             cost_tracker=cost_tracker,
         )
-    except Exception as e:
-        print(f"  Synthesis error: {e}", file=sys.stderr)
+    except (LLMError, OSError, ValueError) as e:
+        logger.warning("Synthesis error: %s", e)
 
     # 9. Build CrossFileFinding objects
     cross_findings = []

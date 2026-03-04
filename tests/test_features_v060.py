@@ -93,7 +93,7 @@ class TestCompileCustomRules:
         rules = compile_custom_rules(config)
         assert rules[0][5] == "Resolve before merging"
 
-    def test_invalid_regex_skipped(self, capsys):
+    def test_invalid_regex_skipped(self, caplog):
         """Rules with invalid regex are skipped with warning."""
         config = {
             "rules": [{
@@ -102,10 +102,10 @@ class TestCompileCustomRules:
                 "message": "Bad regex",
             }]
         }
-        rules = compile_custom_rules(config)
+        with caplog.at_level("WARNING", logger="wiz.config"):
+            rules = compile_custom_rules(config)
         assert len(rules) == 0
-        captured = capsys.readouterr()
-        assert "invalid regex" in captured.err
+        assert "invalid regex" in caplog.text
 
     def test_missing_required_fields_skipped(self, capsys):
         """Rules missing required fields are skipped."""

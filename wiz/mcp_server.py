@@ -6,9 +6,9 @@ Configure with: python -m wiz setup-claude
 Tools:
   wiz_scan         — Scan files/dirs for issues (the workhorse)
   wiz_scan_file    — Quick single-file scan
-  wiz_fix          — Show available fixes (dry run, doesn't apply)
-  wiz_explain      — Structural explanation of a file
-  wiz_analyze_project — Cross-file analysis (deps, dead code, cycles)
+  wiz_fix          — Show before/after fixes without applying
+  wiz_explain      — Structural understanding of a file
+  wiz_analyze_project — Cross-file: deps, dead code, cycles
 
 All tools return concise text, not JSON. Errors return as strings.
 """
@@ -18,6 +18,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
+
+from .config import Severity
 
 mcp = FastMCP(
     "wiz",
@@ -31,11 +33,22 @@ mcp = FastMCP(
     ),
 )
 
+_SEVERITY_MAP = {"critical": Severity.CRITICAL, "warning": Severity.WARNING, "info": Severity.INFO}
+_SEVERITY_RANK = {Severity.CRITICAL: 0, Severity.WARNING: 1, Severity.INFO: 2}
+
+
+def _parse_severity(value: str) -> Severity | str:
+    """Parse a severity string. Returns Severity on success, error string on failure."""
+    sev = _SEVERITY_MAP.get(value)
+    if sev is None:
+        return f"Error: invalid min_severity '{value}'. Use: critical, warning, or info"
+    return sev
+
 
 def _read_file(path: str) -> tuple[str, str, str]:
     """Read a file and detect its language. Returns (content, language, filepath_str).
 
-    Raises a descriptive error string on failure.
+    Raises ValueError with a user-facing message on failure.
     """
     from .analyzer import detect_language
 
@@ -54,6 +67,31 @@ def _read_file(path: str) -> tuple[str, str, str]:
 
     return content, lang, str(filepath)
 
+
+def _collect_files_with_lang(root: Path) -> list[tuple[Path, str]]:
+    """Collect analyzable files under root, each paired with its detected language."""
+    from .analyzer import detect_language, collect_files
+
+    if root.is_file():
+        lang = detect_language(root)
+        return [(root, lang)] if lang else []
+
+    collected, _ = collect_files(root)
+    result = []
+    for fp in collected:
+        lang = detect_language(fp)
+        if lang:
+            result.append((fp, lang))
+    return result
+
+
+def _filter_findings_by_severity(findings: list, min_severity: Severity) -> list:
+    """Filter findings to those at or above min_severity."""
+    threshold = _SEVERITY_RANK[min_severity]
+    return [f for f in findings if _SEVERITY_RANK.get(f.severity, 9) <= threshold]
+
+
+# ─── Tools ───────────────────────────────────────────────────────────
 
 @mcp.tool()
 def wiz_scan(
@@ -75,14 +113,17 @@ def wiz_scan(
         ignore_rules: Comma-separated rule names to suppress (e.g. "todo-marker,long-line").
     """
     from .analyzer import scan_quick, scan_diff, filter_report
-    from .config import Severity, load_project_config, compile_custom_rules
+    from .config import load_project_config, compile_custom_rules
     from .mcp_format import format_scan_report
+
+    sev = _parse_severity(min_severity)
+    if isinstance(sev, str):
+        return sev
 
     root = Path(path).resolve()
     if not root.exists():
         return f"Error: path '{path}' does not exist"
 
-    # Load project config
     scan_root = root if root.is_dir() else root.parent
     project_config = load_project_config(scan_root)
     custom_rules = compile_custom_rules(project_config)
@@ -90,9 +131,9 @@ def wiz_scan(
     try:
         if diff_only:
             try:
-                report, resolved_ref = scan_diff(
+                report, _ = scan_diff(
                     root,
-                    base_ref=diff_ref if diff_ref else None,
+                    base_ref=diff_ref or None,
                     language_filter=language,
                     custom_rules=custom_rules,
                 )
@@ -105,16 +146,10 @@ def wiz_scan(
                 custom_rules=custom_rules,
                 use_cache=False,
             )
-    except Exception as e:
+    except Exception as e:  # MCP tool boundary: return user-friendly error
         return f"Error during scan: {e}"
 
-    # Apply filters
-    severity_map = {"critical": Severity.CRITICAL, "warning": Severity.WARNING, "info": Severity.INFO}
-    sev = severity_map.get(min_severity)
-    if min_severity and sev is None:
-        return f"Error: invalid min_severity '{min_severity}'. Use: critical, warning, or info"
-    ignore_set = set(r.strip() for r in ignore_rules.split(",")) if ignore_rules else None
-
+    ignore_set = {r.strip() for r in ignore_rules.split(",")} if ignore_rules else None
     report = filter_report(report, ignore_rules=ignore_set, min_severity=sev)
 
     return format_scan_report(report)
@@ -137,7 +172,7 @@ def wiz_scan_file(path: str) -> str:
 
     try:
         findings = analyze_file_static(filepath, content, lang)
-    except Exception as e:
+    except Exception as e:  # MCP tool boundary: return user-friendly error
         return f"Error analyzing file: {e}"
 
     lines = content.count("\n") + 1
@@ -161,58 +196,42 @@ def wiz_fix(
     """
     from .detector import analyze_file_static
     from .fixer import fix_file as fixer_fix_file
-    from .analyzer import detect_language, collect_files
-    from .config import Severity, FixReport, load_project_config, compile_custom_rules
+    from .config import FixReport, load_project_config, compile_custom_rules
     from .mcp_format import format_fix_report
+
+    sev = _parse_severity(min_severity)
+    if isinstance(sev, str):
+        return sev
 
     root = Path(path).resolve()
     if not root.exists():
         return f"Error: path '{path}' does not exist"
 
-    severity_map = {"critical": Severity.CRITICAL, "warning": Severity.WARNING, "info": Severity.INFO}
-    severity_order = {Severity.CRITICAL: 0, Severity.WARNING: 1, Severity.INFO: 2}
-    min_sev = severity_map.get(min_severity)
-    rules_list = [r.strip() for r in rules.split(",")] if rules else None
+    files = _collect_files_with_lang(root)
+    if not files:
+        if root.is_file():
+            return f"Error: unsupported file type '{root.suffix}'"
+        return "No fixable files found."
 
-    # Load project config
     fix_root = root if root.is_dir() else root.parent
     project_config = load_project_config(fix_root)
     custom_rules = compile_custom_rules(project_config)
-
-    # Collect files
-    if root.is_file():
-        lang = detect_language(root)
-        if not lang:
-            return f"Error: unsupported file type '{root.suffix}'"
-        files_to_fix = [(root, lang)]
-    else:
-        collected, _ = collect_files(root)
-        files_to_fix = []
-        for fp in collected:
-            fl = detect_language(fp)
-            if fl:
-                files_to_fix.append((fp, fl))
-
-    if not files_to_fix:
-        return "No fixable files found."
+    rules_list = [r.strip() for r in rules.split(",")] if rules else None
 
     all_fixes = []
-    total_applied = total_skipped = total_failed = files_fixed = 0
+    files_fixed = 0
+    errors = []
 
-    for filepath, file_lang in files_to_fix:
+    for filepath, file_lang in files:
         try:
             content = filepath.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+        except OSError as e:
+            errors.append(f"{filepath.name}: {e}")
             continue
 
         findings = analyze_file_static(str(filepath), content, file_lang,
                                        custom_rules=custom_rules)
-
-        # Severity filter
-        if min_sev:
-            min_ord = severity_order[min_sev]
-            findings = [f for f in findings if severity_order.get(f.severity, 9) <= min_ord]
-
+        findings = _filter_findings_by_severity(findings, sev)
         if not findings:
             continue
 
@@ -222,13 +241,11 @@ def wiz_fix(
                 use_llm=False, dry_run=True,
                 rules=rules_list, custom_rules=custom_rules,
             )
-        except Exception:
+        except (OSError, ValueError, RuntimeError) as e:
+            errors.append(f"{filepath.name}: {e}")
             continue
 
         all_fixes.extend(report.fixes)
-        total_applied += report.applied
-        total_skipped += report.skipped
-        total_failed += report.failed
         if report.files_fixed > 0:
             files_fixed += 1
 
@@ -236,13 +253,18 @@ def wiz_fix(
         root=str(root),
         files_fixed=files_fixed,
         total_fixes=len(all_fixes),
-        applied=total_applied,
-        skipped=total_skipped,
-        failed=total_failed,
+        applied=0,
+        skipped=0,
+        failed=0,
         fixes=all_fixes,
     )
 
-    return format_fix_report(aggregate)
+    result = format_fix_report(aggregate)
+    if errors:
+        result += f"\n\nWarnings ({len(errors)} files skipped):"
+        for err in errors[:5]:
+            result += f"\n  {err}"
+    return result
 
 
 @mcp.tool()
@@ -263,24 +285,24 @@ def wiz_explain(path: str) -> str:
     except ValueError as e:
         return str(e)
 
-    # Static analysis for findings context
     findings = analyze_file_static(filepath, content, lang)
 
-    # Extract semantics (optional, graceful fallback)
+    # Semantic extraction enhances explanations but isn't required.
+    # Fails gracefully if tree-sitter isn't installed.
     semantics = None
     type_map = None
     try:
         from .semantic.core import extract_semantics
+        from .semantic.lang_config import get_config
+        from .semantic.types import infer_types
+
         semantics = extract_semantics(content, filepath, lang)
         if semantics:
-            from .semantic.lang_config import get_config
             config = get_config(lang)
             if config:
-                from .semantic.types import infer_types
-                source_bytes = content.encode("utf-8")
-                type_map = infer_types(semantics, source_bytes, config)
-    except Exception:
-        pass  # tree-sitter not installed or other issue
+                type_map = infer_types(semantics, content.encode("utf-8"), config)
+    except ImportError:
+        pass  # tree-sitter not installed
 
     explanation = explain_file(
         content, filepath, lang,
@@ -321,7 +343,7 @@ def wiz_analyze_project(
             depth=depth,
             use_llm=False,
         )
-    except Exception as e:
+    except Exception as e:  # MCP tool boundary: return user-friendly error
         return f"Error analyzing project: {e}"
 
     return format_project_analysis(analysis)

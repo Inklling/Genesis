@@ -289,7 +289,7 @@ def infer_types(
         if name == "__return__":
             # Return type annotation — look up scope then function
             scope = scope_by_id.get(scope_id)
-            fdef = fdef_by_qname.get(scope.name) if scope and scope.kind == "function" else None  # type: ignore[arg-type]
+            fdef = fdef_by_qname.get(scope.name) if scope and scope.kind == "function" else None  # type: ignore[arg-type]  # scope.name is str when kind == "function"
             if fdef:
                 tinfo = _infer_from_annotation(ann_text, semantics.language)
                 if tinfo:

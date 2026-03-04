@@ -1,12 +1,15 @@
 """Anthropic SDK wrapper — prompts, API calls, cost tracking."""
 
 import json
+import logging
 import sys
 import time
 import threading
 from typing import Any, Optional
 
 import re
+
+logger = logging.getLogger(__name__)
 
 from .config import (
     Finding, Severity, Category, Source, Confidence,
@@ -199,7 +202,7 @@ def _recover_truncated_json(text: str) -> list | None:
                 msg = f"  [llm] Recovered {len(result)} findings from truncated JSON"
                 if dropped_hint > 0:
                     msg += f" (~{dropped_hint} dropped)"
-                print(msg, file=sys.stderr)
+                logger.debug(msg)
                 return result
         except json.JSONDecodeError:
             continue
@@ -351,7 +354,7 @@ def _api_call_with_retry(client: Any, **kwargs: Any) -> Any:
     for attempt in range(len(_RETRY_DELAYS) + 1):
         try:
             return client.messages.create(**kwargs)
-        except Exception as e:
+        except Exception as e:  # Anthropic SDK raises various types; inspect status to decide retry
             # Check if this is a retriable HTTP error
             status = getattr(e, "status_code", None)
             is_timeout = "timeout" in str(e).lower() or "timed out" in str(e).lower()
@@ -359,22 +362,23 @@ def _api_call_with_retry(client: Any, **kwargs: Any) -> Any:
 
             if is_retriable and attempt < len(_RETRY_DELAYS):
                 delay = _RETRY_DELAYS[attempt]
-                print(f"  [llm] Retry {attempt + 1}/{len(_RETRY_DELAYS)} after {delay}s "
-                      f"(status={status})", file=sys.stderr)
+                logger.debug("Retry %d/%d after %ds (status=%s)",
+                             attempt + 1, len(_RETRY_DELAYS), delay, status)
                 time.sleep(delay)
                 last_err = e
             else:
                 raise
-    raise last_err  # type: ignore[misc]
+    assert last_err is not None  # guaranteed by loop structure
+    raise last_err
 
 
 def analyze_chunk(chunk: Chunk, cost_tracker: CostTracker) -> list[Finding]:
     """Send a code chunk to Claude for analysis. Returns findings."""
     est_tokens = _estimate_chunk_tokens(chunk)
     if est_tokens > MAX_CHUNK_TOKENS:
-        print(f"  [llm] Warning: chunk ~{est_tokens:,} tokens (>{MAX_CHUNK_TOKENS:,}) — "
-              f"{chunk.filepath} lines {chunk.start_line}-{chunk.end_line}",
-              file=sys.stderr)
+        logger.debug("Chunk ~%s tokens (>%s) — %s lines %d-%d",
+                     f"{est_tokens:,}", f"{MAX_CHUNK_TOKENS:,}",
+                     chunk.filepath, chunk.start_line, chunk.end_line)
 
     client = _get_client()
 
@@ -400,11 +404,11 @@ def analyze_chunk(chunk: Chunk, cost_tracker: CostTracker) -> list[Finding]:
         # Attempt to recover truncated JSON arrays
         raw_findings = _recover_truncated_json(text)
         if raw_findings is None:
-            print("  [llm] Malformed JSON response (not valid JSON array)", file=sys.stderr)
+            logger.warning("Malformed JSON response (not valid JSON array)")
             return []
 
     if not isinstance(raw_findings, list):
-        print(f"  [llm] Unexpected response type: {type(raw_findings).__name__}", file=sys.stderr)
+        logger.warning("Unexpected response type: %s", type(raw_findings).__name__)
         return []
 
     findings = []
@@ -492,14 +496,10 @@ def _merge_chunked_results(results: list[dict]) -> dict:
 
     Deduplicates findings by (line, title) and merges quick_wins.
     """
-    merged = {
-        "summary": "",
-        "findings": [],
-        "quick_wins": [],
-    }
-
-    summaries = []
-    seen_findings = set()
+    all_findings: list[dict] = []
+    all_quick_wins: list[str] = []
+    summaries: list[str] = []
+    seen_findings: set[tuple] = set()
 
     for r in results:
         if r.get("summary"):
@@ -508,13 +508,16 @@ def _merge_chunked_results(results: list[dict]) -> dict:
             key = (f.get("line"), f.get("title", ""))
             if key not in seen_findings:
                 seen_findings.add(key)
-                merged["findings"].append(f)  # type: ignore[attr-defined]
+                all_findings.append(f)
         for qw in r.get("quick_wins", []):
-            if qw not in merged["quick_wins"]:
-                merged["quick_wins"].append(qw)  # type: ignore[attr-defined]
+            if qw not in all_quick_wins:
+                all_quick_wins.append(qw)
 
-    merged["summary"] = " | ".join(summaries) if summaries else "No issues found"
-    return merged
+    return {
+        "summary": " | ".join(summaries) if summaries else "No issues found",
+        "findings": all_findings,
+        "quick_wins": all_quick_wins,
+    }
 
 
 def _analyze_file_chunked(
@@ -934,7 +937,7 @@ def fix_file(
     except json.JSONDecodeError:
         raw_fixes = _recover_truncated_json(text)
         if raw_fixes is None:
-            print("  [llm] Fix response: malformed JSON", file=sys.stderr)
+            logger.warning("Fix response: malformed JSON")
             return [], cost_tracker
 
     if not isinstance(raw_fixes, list):

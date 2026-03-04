@@ -16,7 +16,11 @@ from .config import (
     FixReport,
     CrossFileFinding,
     ProjectAnalysis,
+    patch_tree_sitter_for_bundled,
 )
+
+# Patch tree-sitter loading for Nuitka bundled mode (no-op if not bundled)
+patch_tree_sitter_for_bundled()
 
 __all__ = [
     "__version__",

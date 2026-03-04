@@ -2,11 +2,12 @@
 
 import argparse
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
 from . import __version__
-from .config import get_api_key, Severity, Confidence, LANGUAGE_EXTENSIONS, load_project_config, compile_custom_rules
+from .config import get_api_key, Severity, Confidence, LANGUAGE_EXTENSIONS, load_project_config, compile_custom_rules, is_bundled, get_exe_path
 from .analyzer import scan_quick, scan_deep, scan_diff, cost_estimate, detect_language, filter_report, diff_reports
 from .detector import analyze_file_static
 from .storage import load_latest_report, load_baseline_report, list_reports
@@ -40,6 +41,62 @@ def _confirm_llm_usage(args) -> bool:
     return response in ("y", "yes")
 
 
+_DEFAULT_WIZIGNORE = """\
+# Build artifacts
+build/
+dist/
+bin/
+obj/
+out/
+target/
+
+# Dependencies
+node_modules/
+vendor/
+.venv/
+venv/
+Packages/
+
+# Caches and generated
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+*.pyc
+
+# Version control
+.git/
+
+# IDE
+.idea/
+.vs/
+.vscode/
+
+# Binary/asset files (not code)
+*.exe
+*.dll
+*.so
+*.o
+*.a
+*.lib
+*.pdb
+"""
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    """Create starter .wizignore in the current directory."""
+    root = Path(".").resolve()
+
+    wizignore = root / ".wizignore"
+    if wizignore.exists():
+        print(f".wizignore already exists at {wizignore}")
+        return 0
+
+    wizignore.write_text(_DEFAULT_WIZIGNORE, encoding="utf-8")
+    print(f"Created {wizignore}")
+    print("Edit it to exclude folders you don't want scanned.")
+    return 0
+
+
 def cmd_scan(args: argparse.Namespace) -> int:
     """Run a code scan (quick or deep)."""
     root = Path(args.path).resolve()
@@ -68,6 +125,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
     if args.deep and not _confirm_llm_usage(args):
         return 1
 
+    scan_start = time.monotonic()
     try:
         if diff_base is not None:
             # Diff mode: only scan changed lines vs git ref
@@ -90,7 +148,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
             try:
                 report_obj = scan_deep(root, language_filter=lang, use_cache=use_cache,
                                        max_workers=workers, custom_rules=custom_rules)
-            except Exception as e:
+            except Exception as e:  # CLI boundary: catch-all for user-facing error
                 print(f"Error: {e}", file=sys.stderr)
                 return 1
         else:
@@ -123,11 +181,14 @@ def cmd_scan(args: argparse.Namespace) -> int:
     if not ignore_rules and "ignore_rules" in project_config:
         ignore_rules = set(project_config["ignore_rules"])
     
-    min_severity = SEVERITY_MAP.get(getattr(args, "min_severity", None))  # type: ignore[arg-type]
+    min_severity = SEVERITY_MAP.get(getattr(args, "min_severity", None))  # type: ignore[arg-type]  # getattr returns str | None; dict.get accepts both
     if not min_severity and "min_severity" in project_config:
         min_severity = SEVERITY_MAP.get(project_config["min_severity"])
+    # Bundled .exe default: warning (reduce noise for new users)
+    if not min_severity and is_bundled():
+        min_severity = Severity.WARNING
 
-    min_confidence = CONFIDENCE_MAP.get(getattr(args, "min_confidence", None))  # type: ignore[arg-type]
+    min_confidence = CONFIDENCE_MAP.get(getattr(args, "min_confidence", None))  # type: ignore[arg-type]  # getattr returns str | None; dict.get accepts both
     if not min_confidence and "min_confidence" in project_config:
         min_confidence = CONFIDENCE_MAP.get(project_config["min_confidence"])
     report_obj = filter_report(
@@ -137,12 +198,14 @@ def cmd_scan(args: argparse.Namespace) -> int:
         min_confidence=min_confidence,
     )
 
+    scan_duration = time.monotonic() - scan_start
+
     if output_format == "json":
         rpt.print_json(report_obj)
     elif output_format == "sarif":
         rpt.print_sarif(report_obj)
     else:
-        rpt.print_report(report_obj)
+        rpt.print_report(report_obj, duration=scan_duration)
 
     if report_obj.critical > 0:
         return 2  # exit code 2 = critical issues found
@@ -266,7 +329,7 @@ def _auto_discover_imports_v2(filepath: str, content: str, lang: str) -> dict[st
 
         return result
 
-    except Exception:
+    except (OSError, ValueError, ImportError):
         # Fall back to legacy method for Python
         if lang == "python":
             return _auto_discover_python_imports(filepath, content)
@@ -357,8 +420,7 @@ def cmd_debug(args: argparse.Namespace) -> int:
         else:
             rpt.print_debug_result(str(filepath), static_findings, llm_result)
             print(f"  Cost: ${tracker.total_cost:.4f}")
-    except Exception as e:
-        # Fall back to static-only
+    except Exception as e:  # LLM can fail many ways (network, API, parse); graceful fallback
         if output_format != "json":
             print(f"LLM error: {e}", file=sys.stderr)
         if output_format == "json":
@@ -416,7 +478,7 @@ def cmd_optimize(args: argparse.Namespace) -> int:
         else:
             rpt.print_optimize_result(str(filepath), static_findings, llm_result)
             print(f"  Cost: ${tracker.total_cost:.4f}")
-    except Exception as e:
+    except Exception as e:  # LLM can fail many ways (network, API, parse); graceful fallback
         if output_format != "json":
             print(f"LLM error: {e}", file=sys.stderr)
         if output_format == "json":
@@ -540,7 +602,7 @@ def cmd_fix(args: argparse.Namespace) -> int:
             aggregate_verification["resolved"] += report.verification.get("resolved", 0)
             aggregate_verification["remaining"] += report.verification.get("remaining", 0)
             aggregate_verification["new_issues"] += report.verification.get("new_issues", 0)
-            aggregate_verification["new_findings"].extend(report.verification.get("new_findings", []))  # type: ignore[attr-defined]
+            aggregate_verification["new_findings"].extend(report.verification.get("new_findings", []))  # type: ignore[attr-defined]  # aggregate_verification values are heterogeneous (int and list)
 
     # Build aggregate report
     aggregate = FixReport(
@@ -597,7 +659,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         print("\n\nAnalysis interrupted.", file=sys.stderr)
         return 130
-    except Exception as e:
+    except Exception as e:  # CLI boundary: catch-all for user-facing error
         print(f"Error: {e}", file=sys.stderr)
         return 1
 
@@ -752,7 +814,7 @@ def cmd_explain(args: argparse.Namespace) -> int:
             if not api_key:
                 print("\n  --deep requires ANTHROPIC_API_KEY. Showing offline analysis only.", file=sys.stderr)
             else:
-                from .llm import explain_file_llm, CostTracker  # type: ignore[attr-defined]
+                from .llm import explain_file_llm, CostTracker  # type: ignore[attr-defined]  # conditional import; exists at runtime
                 tracker = CostTracker()
                 llm_result, tracker = explain_file_llm(
                     content, str(filepath), lang,
@@ -769,7 +831,7 @@ def cmd_explain(args: argparse.Namespace) -> int:
                                 print(f"  {key}:")
                                 print(f"    {value}\n")
                     print(f"  Cost: ${tracker.total_cost:.4f}")
-        except Exception as e:
+        except Exception as e:  # LLM can fail many ways (network, API, parse); graceful fallback
             if output_format != "json":
                 print(f"\n  LLM analysis unavailable: {e}", file=sys.stderr)
 
@@ -807,14 +869,24 @@ def cmd_setup_claude(args: argparse.Namespace) -> int:
     """Print MCP config for Claude Code setup."""
     import json
 
-    config = {
-        "mcpServers": {
-            "wiz": {
-                "command": "python",
-                "args": ["-m", "wiz", "mcp"],
+    if is_bundled():
+        config = {
+            "mcpServers": {
+                "wiz": {
+                    "command": str(get_exe_path()),
+                    "args": ["mcp"],
+                }
             }
         }
-    }
+    else:
+        config = {
+            "mcpServers": {
+                "wiz": {
+                    "command": "python",
+                    "args": ["-m", "wiz", "mcp"],
+                }
+            }
+        }
 
     print("Add to your Claude Code MCP settings:\n")
     print(json.dumps(config, indent=2))
@@ -848,6 +920,10 @@ def main() -> None:
     )
     parser.add_argument("--version", action="version", version=f"wiz {__version__}")
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
+
+    # init
+    p_init = subparsers.add_parser("init", help="Create starter .wizignore file")
+    p_init.set_defaults(func=cmd_init)
 
     # scan
     p_scan = subparsers.add_parser("scan", help="Scan code for issues")

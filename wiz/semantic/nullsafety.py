@@ -22,65 +22,60 @@ from .types import FileTypeMap, TypeInfo, InferredType
 
 # ─── Narrowing detection ─────────────────────────────────────────────
 
-# Pre-compiled guard patterns (avoid recompiling per line)
-# Group 1 captures the variable name being guarded.
-# For self.attr patterns, group 1 captures the attribute name (not 'self').
-_GUARD_PATTERNS = [
-    # Python: if self.x is not None:  (capture attr name for instance attributes)
-    re.compile(r'if\s+self\.(\w+)\s+is\s+not\s+None\b'),
-    # Python: if x is not None:
-    re.compile(r'if\s+(\w+)\s+is\s+not\s+None\s*:'),
-    # Python: if x is not None and ...
-    re.compile(r'if\s+(\w+)\s+is\s+not\s+None\b'),
-    # Python: if x != None:
-    re.compile(r'if\s+(\w+)\s*!=\s*None\s*:'),
-    # Python truthiness: if self.x:
-    re.compile(r'if\s+self\.(\w+)\s*:'),
-    # Python truthiness: if x:
-    re.compile(r'if\s+(\w+)\s*:'),
-    # JS/TS/Java/C#: if (x !== null)
-    re.compile(r'if\s*\(\s*(\w+)\s*!==?\s*null\s*\)'),
-    # JS/TS/Java/C#: if (x != null)
-    re.compile(r'if\s*\(\s*(\w+)\s*!=\s*null\s*\)'),
-    # JS/TS: if (x)
-    re.compile(r'if\s*\(\s*(\w+)\s*\)'),
-]
+# ─── Guard pattern tables ─────────────────────────────────────────
+# Built programmatically from (template, description) tuples.
+# Each template uses {var} for the captured variable name.
 
-# Early-exit patterns: `if x is None: raise/return` eliminates None
-# on the continuation path (all lines after this block are guarded)
-_EARLY_EXIT_PATTERNS = [
-    # Python: if self.x is None:
-    re.compile(r'if\s+self\.(\w+)\s+is\s+None\s*:'),
-    # Python: if x is None: raise/return
-    re.compile(r'if\s+(\w+)\s+is\s+None\s*:'),
-    # Python: if not self.x:
-    re.compile(r'if\s+not\s+self\.(\w+)\s*:'),
-    # Python: if not x:
-    re.compile(r'if\s+not\s+(\w+)\s*:'),
-    # JS/TS: if (x === null) / if (x == null)
-    re.compile(r'if\s*\(\s*(\w+)\s*===?\s*null\s*\)'),
-    # JS/TS: if (!x)
-    re.compile(r'if\s*\(\s*!\s*(\w+)\s*\)'),
-]
+def _build_patterns(templates: list[str]) -> list[re.Pattern]:
+    """Build compiled regex patterns from templates with {var} placeholder."""
+    VAR = r'(\w+)'
+    SELF_VAR = r'self\.(\w+)'
+    result = []
+    for tmpl in templates:
+        # Expand {self_var} and {var} placeholders
+        pattern = tmpl.replace('{self_var}', SELF_VAR).replace('{var}', VAR)
+        result.append(re.compile(pattern))
+    return result
 
-# Assert patterns: `assert x is not None` guards everything after
-_ASSERT_PATTERNS = [
-    re.compile(r'assert\s+self\.(\w+)\s+is\s+not\s+None'),
-    re.compile(r'assert\s+(\w+)\s+is\s+not\s+None'),
-    re.compile(r'assert\s+isinstance\s*\(\s*self\.(\w+)\s*,'),
-    re.compile(r'assert\s+isinstance\s*\(\s*(\w+)\s*,'),
-    re.compile(r'assert\s+self\.(\w+)\b'),
-    re.compile(r'assert\s+(\w+)\b'),
-]
+
+# Guard patterns: `if x is not None:` / `if (x !== null)` — block body is guarded
+_GUARD_PATTERNS = _build_patterns([
+    r'if\s+{self_var}\s+is\s+not\s+None\b',      # Python: if self.x is not None
+    r'if\s+{var}\s+is\s+not\s+None\s*:',          # Python: if x is not None:
+    r'if\s+{var}\s+is\s+not\s+None\b',            # Python: if x is not None and ...
+    r'if\s+{var}\s*!=\s*None\s*:',                 # Python: if x != None:
+    r'if\s+{self_var}\s*:',                        # Python: if self.x:
+    r'if\s+{var}\s*:',                             # Python: if x:
+    r'if\s*\(\s*{var}\s*!==?\s*null\s*\)',         # JS/TS/Java/C#: if (x !== null)
+    r'if\s*\(\s*{var}\s*!=\s*null\s*\)',           # JS/TS/Java/C#: if (x != null)
+    r'if\s*\(\s*{var}\s*\)',                       # JS/TS: if (x)
+])
+
+# Early-exit patterns: `if x is None: raise/return` — continuation is guarded
+_EARLY_EXIT_PATTERNS = _build_patterns([
+    r'if\s+{self_var}\s+is\s+None\s*:',           # Python: if self.x is None:
+    r'if\s+{var}\s+is\s+None\s*:',                # Python: if x is None:
+    r'if\s+not\s+{self_var}\s*:',                  # Python: if not self.x:
+    r'if\s+not\s+{var}\s*:',                       # Python: if not x:
+    r'if\s*\(\s*{var}\s*===?\s*null\s*\)',         # JS/TS: if (x === null)
+    r'if\s*\(\s*!\s*{var}\s*\)',                   # JS/TS: if (!x)
+])
+
+# Assert patterns: `assert x is not None` — everything after is guarded
+_ASSERT_PATTERNS = _build_patterns([
+    r'assert\s+{self_var}\s+is\s+not\s+None',
+    r'assert\s+{var}\s+is\s+not\s+None',
+    r'assert\s+isinstance\s*\(\s*{self_var}\s*,',
+    r'assert\s+isinstance\s*\(\s*{var}\s*,',
+    r'assert\s+{self_var}\b',
+    r'assert\s+{var}\b',
+])
 
 # Inline guard patterns: short-circuit and ternary on same line
 _INLINE_GUARD_RE = [
-    # self.x and self.x.attr (short-circuit for instance attrs)
-    re.compile(r'\bself\.(\w+)\s+and\s+self\.\1\.'),
-    # x and x.attr (short-circuit)
-    re.compile(r'\b(\w+)\s+and\s+\1\.'),
-    # x if x else default (ternary)
-    re.compile(r'\b(\w+)\b.*\bif\s+\1\b.*\belse\b'),
+    re.compile(r'\bself\.(\w+)\s+and\s+self\.\1\.'),   # self.x and self.x.attr
+    re.compile(r'\b(\w+)\s+and\s+\1\.'),                # x and x.attr
+    re.compile(r'\b(\w+)\b.*\bif\s+\1\b.*\belse\b'),   # x if x else default
 ]
 
 
@@ -273,7 +268,7 @@ def check_null_safety(
         if ref.context != "attribute_access":
             continue
 
-        tinfo = _resolve_nullable_in_scope(ref.name, ref.scope_id, nullable_vars, semantics)  # type: ignore[assignment]
+        tinfo = _resolve_nullable_in_scope(ref.name, ref.scope_id, nullable_vars, semantics)  # type: ignore[assignment]  # None handled on next line
         if tinfo is None:
             continue
 
@@ -316,7 +311,7 @@ def check_null_safety(
         if call.receiver is None:
             continue
 
-        tinfo = _resolve_nullable_in_scope(call.receiver, call.scope_id, nullable_vars, semantics)  # type: ignore[assignment]
+        tinfo = _resolve_nullable_in_scope(call.receiver, call.scope_id, nullable_vars, semantics)  # type: ignore[assignment]  # None handled on next line
         if tinfo is None:
             continue
 

@@ -1,7 +1,10 @@
 """Static analysis engine — regex matching + Python AST parsing."""
 
 import ast
+import logging
 import re
+
+logger = logging.getLogger(__name__)
 
 from .config import Finding, Severity, Category, Source
 from .languages import get_rules_for_language
@@ -125,7 +128,7 @@ def run_regex_checks(content: str, filepath: str, language: str,
                 # Check if block opens and closes on same line
                 idx = stripped.index(block_open)
                 rest = stripped[idx + len(block_open):]
-                if block_close not in rest:  # type: ignore[operator]
+                if block_close not in rest:  # type: ignore[operator]  # block_close is non-None here
                     in_block_comment = True
                     continue
             elif alt_block_open:
@@ -139,7 +142,7 @@ def run_regex_checks(content: str, filepath: str, language: str,
                 if alt_start_match:
                     idx = stripped.index(alt_block_open)
                     rest = stripped[idx + len(alt_block_open):]
-                    if alt_block_close not in rest:  # type: ignore[operator]
+                    if alt_block_close not in rest:  # type: ignore[operator]  # alt_block_close is non-None here
                         in_block_comment = True
                         continue
         elif in_block_comment:
@@ -301,7 +304,7 @@ def _check_imports(tree: ast.AST, filepath: str, findings: list[Finding]):
             # Track the root of attribute chains (e.g., 'os' in 'os.path.join')
             root = node
             while isinstance(root, ast.Attribute):
-                root = root.value  # type: ignore[assignment]
+                root = root.value  # type: ignore[assignment]  # narrowing through loop
             if isinstance(root, ast.Name):
                 used_names.add(root.id)
 
@@ -316,8 +319,8 @@ def _check_imports(tree: ast.AST, filepath: str, findings: list[Finding]):
         # via attribute access (e.g., `email.message.Message()` uses `email`)
         is_used = name in used_names
         if not is_used and "." in name:
-            root = name.split(".")[0]  # type: ignore[assignment]
-            is_used = root in used_names
+            root_name = name.split(".")[0]
+            is_used = root_name in used_names
         if not is_used:
             findings.append(Finding(
                 file=filepath,
@@ -353,7 +356,7 @@ def _check_functions(tree: ast.AST, filepath: str, findings: list[Finding]):
     """Check all functions for common issues."""
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            _check_function(node, filepath, findings)  # type: ignore[arg-type]
+            _check_function(node, filepath, findings)  # type: ignore[arg-type]  # FunctionDef | AsyncFunctionDef both valid
 
 
 def _check_exception_handling(tree: ast.AST, filepath: str, findings: list[Finding]):
@@ -626,8 +629,8 @@ def analyze_file_static(filepath: str, content: str, language: str,
                 if type_map and type_map.types:
                     findings.extend(check_null_safety(
                         semantics, type_map, config, filepath, cfgs=cfgs if config else None))
-            except Exception:
-                pass  # graceful degradation
+            except (ValueError, OSError, AttributeError) as e:
+                logger.debug("Type inference/null safety skipped: %s", e)
 
         findings.extend(check_god_class(semantics, filepath))
         findings.extend(check_feature_envy(semantics, filepath))

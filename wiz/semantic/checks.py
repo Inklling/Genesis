@@ -578,8 +578,8 @@ def run_tree_sitter_checks(content: str, filepath: str,
         return []
 
     try:
-        parser = get_parser(config.ts_language_name)  # type: ignore[arg-type]
-    except Exception:
+        parser = get_parser(config.ts_language_name)  # type: ignore[arg-type]  # tree-sitter-language-pack has no stubs
+    except (LookupError, ValueError, RuntimeError):
         return []  # Language not available in installed pack
 
     source_bytes = content.encode("utf-8")
