@@ -1,5 +1,6 @@
 """Fix engine — deterministic fixers, LLM fix orchestration, fix application."""
 
+import ast
 import logging
 import os
 import re
@@ -88,6 +89,10 @@ def _fix_bare_except(line: str, finding: Finding, content: str) -> Optional[Fix]
 
 def _fix_loose_equality(line: str, finding: Finding, content: str) -> Optional[Fix]:
     """Replace == with === and != with !== in JS/TS."""
+    # Preserve == null idiom (checks both null and undefined intentionally)
+    code_only = _STRING_LITERAL_RE.sub(lambda m: ' ' * len(m.group()), line)
+    if re.search(r'(?<!=)==(?!=)\s*null\b', code_only) or re.search(r'(?<!=)!=(?!=)\s*null\b', code_only):
+        return None
     new_line = line
     # Replace != before == to avoid double-replacing !== back
     new_line = re.sub(r'(?<!=)!=(?!=)', '!==', new_line)
@@ -104,16 +109,37 @@ def _fix_loose_equality(line: str, finding: Finding, content: str) -> Optional[F
 
 def _fix_var_usage(line: str, finding: Finding, content: str) -> Optional[Fix]:
     """Replace `var` with `let`."""
-    m = re.match(r'^(\s*)var\b', line)
-    if m:
-        new_line = re.sub(r'^(\s*)var\b', r'\1let', line)
-        return Fix(
-            file=finding.file, line=finding.line, rule=finding.rule,
-            original_code=line, fixed_code=new_line,
-            explanation="Replaced 'var' with 'let' for block scoping",
-            source=FixSource.DETERMINISTIC,
-        )
-    return None
+    m = re.match(r'^(\s*)var\s+(\w+)', line)
+    if not m:
+        return None
+    var_name = m.group(2)
+    indent = m.group(1)
+
+    # Skip if var is inside a block scope (if/for/while/switch) — let would
+    # break references outside the block since let has block scoping.
+    lines = content.splitlines()
+    line_idx = finding.line - 1
+    indent_len = len(indent)
+    # Walk backwards to see if we're inside a block
+    for i in range(line_idx - 1, -1, -1):
+        prev = lines[i]
+        stripped = prev.strip()
+        if not stripped:
+            continue
+        prev_indent = len(prev) - len(prev.lstrip())
+        if prev_indent < indent_len:
+            # We found a line at a shallower indent — check if it's a block opener
+            if re.match(r'\s*(?:if|for|while|switch)\b', prev):
+                return None  # var is inside a block scope, skip
+            break
+
+    new_line = re.sub(r'^(\s*)var\b', r'\1let', line)
+    return Fix(
+        file=finding.file, line=finding.line, rule=finding.rule,
+        original_code=line, fixed_code=new_line,
+        explanation="Replaced 'var' with 'let' for block scoping",
+        source=FixSource.DETERMINISTIC,
+    )
 
 
 def _fix_none_comparison(line: str, finding: Finding, content: str) -> Optional[Fix]:
@@ -153,15 +179,21 @@ def _fix_type_comparison(line: str, finding: Finding, content: str) -> Optional[
 
 
 def _fix_console_log(line: str, finding: Finding, content: str) -> Optional[Fix]:
-    """Remove console.log() line."""
-    if "console.log" in line:
-        return Fix(
-            file=finding.file, line=finding.line, rule=finding.rule,
-            original_code=line, fixed_code="",
-            explanation="Removed console.log() debug statement",
-            source=FixSource.DETERMINISTIC,
-        )
-    return None
+    """Remove console.log() line — only if it's the sole statement."""
+    if "console.log" not in line:
+        return None
+    stripped = line.strip().rstrip(';').strip()
+    # If the line has other statements (semicolons outside the console.log call),
+    # or is chained, skip instead of deleting the whole line.
+    # Match a standalone console.log(...) call
+    if not re.match(r'^console\.log\s*\(.*\)\s*;?\s*$', stripped):
+        return None
+    return Fix(
+        file=finding.file, line=finding.line, rule=finding.rule,
+        original_code=line, fixed_code="",
+        explanation="Removed console.log() debug statement",
+        source=FixSource.DETERMINISTIC,
+    )
 
 
 def _fix_insecure_http(line: str, finding: Finding, content: str) -> Optional[Fix]:
@@ -173,7 +205,11 @@ def _fix_insecure_http(line: str, finding: Finding, content: str) -> Optional[Fi
     stripped = line.strip()
     if stripped.startswith('"""') or stripped.startswith("'''"):
         return None
-    new_line = re.sub(r'http://', 'https://', line)
+    # Skip localhost and internal URLs — these legitimately use HTTP
+    new_line = re.sub(
+        r'http://(?!localhost\b|127\.0\.0\.1\b|0\.0\.0\.0\b|\[::1\])',
+        'https://', line,
+    )
     if new_line != line:
         return Fix(
             file=finding.file, line=finding.line, rule=finding.rule,
@@ -200,6 +236,12 @@ def _fix_fstring_no_expr(line: str, finding: Finding, content: str) -> Optional[
 
 def _fix_hardcoded_secret(line: str, finding: Finding, content: str) -> Optional[Fix]:
     """Replace hardcoded secret with os.environ lookup."""
+    # Skip test files — secrets there are usually fixtures, not real
+    basename = os.path.basename(finding.file)
+    dirparts = finding.file.replace('\\', '/').split('/')
+    if (basename.startswith('test_') or basename.endswith(('_test.py', '.test.js', '.test.ts',
+            '.spec.js', '.spec.ts')) or '__tests__' in dirparts):
+        return None
     # Match: VAR_NAME = "secret_value" or VAR_NAME = 'secret_value'
     m = re.match(r'^(\s*)(\w+)\s*=\s*["\'].*?["\']', line)
     if not m:
@@ -363,6 +405,27 @@ def _fix_mutable_default(line: str, finding: Finding, content: str) -> Optional[
         guard_lines += f"{body_indent}if {param} is None:\n"
         guard_lines += f"{body_indent}    {param} = {mutable}\n"
 
+    # If next line after signature is a docstring, place guard after docstring
+    next_idx = sig_end + 1
+    if next_idx < len(lines):
+        next_stripped = lines[next_idx].strip()
+        if next_stripped.startswith('"""') or next_stripped.startswith("'''"):
+            quote = next_stripped[:3]
+            # Check if docstring closes on same line (after the opening)
+            rest = next_stripped[3:]
+            if quote in rest:
+                # Single-line docstring — include it in new_sig, guards go after
+                new_sig += lines[next_idx]
+                sig_end = next_idx
+            else:
+                # Multi-line docstring — find the closing triple-quote
+                new_sig += lines[next_idx]
+                for di in range(next_idx + 1, len(lines)):
+                    new_sig += lines[di]
+                    sig_end = di
+                    if quote in lines[di]:
+                        break
+
     fixed_code = new_sig + guard_lines
     return Fix(
         file=finding.file, line=finding.line, rule=finding.rule,
@@ -370,6 +433,242 @@ def _fix_mutable_default(line: str, finding: Finding, content: str) -> Optional[
         explanation="Replaced mutable default argument with None + guard clause",
         source=FixSource.DETERMINISTIC,
         end_line=sig_end + 1 if sig_end > line_idx else None,
+    )
+
+
+def _fix_unused_variable(line: str, finding: Finding, content: str) -> Optional[Fix]:
+    """Remove an unused variable assignment."""
+    stripped = line.strip()
+
+    # JS/TS: const x = ...; / let x = ...; / var x = ...;
+    js_m = re.match(r'^(const|let|var)\s+(\w+)\s*=\s*(.+?);?\s*$', stripped)
+    if js_m:
+        var_name = js_m.group(2)
+        rhs = js_m.group(3).strip()
+        # Skip if RHS has side effects (function calls other than safe constructors)
+        if re.search(r'\w+\s*\(', rhs) and not re.match(r'^["\'\d\[\{(]', rhs):
+            if 'require(' not in rhs:  # require() is an import, safe to remove
+                return None
+        return Fix(
+            file=finding.file, line=finding.line, rule=finding.rule,
+            original_code=line, fixed_code="",
+            explanation=f"Removed unused variable: {var_name}",
+            source=FixSource.DETERMINISTIC,
+        )
+
+    # Python: x = <value>
+    if not re.match(r'^\w+\s*=\s*', stripped):
+        return None
+    # Don't remove if it's a type annotation (x: int = 5)
+    if re.match(r'^\w+\s*:', stripped):
+        return None
+    # Don't remove if it looks like a destructuring or multi-assignment
+    if ',' in stripped.split('=')[0]:
+        return None
+    # Don't remove if the RHS has side effects (function calls, method calls, chained calls)
+    rhs = stripped.split('=', 1)[1].strip()
+    if re.search(r'\w+\s*\(', rhs) or re.search(r'\.\w+\s*\(', rhs):
+        safe_calls = ('True', 'False', 'None', '[]', '{}', '""', "''", '0', 'set()', 'dict()', 'list()', 'tuple()')
+        if rhs not in safe_calls and not re.match(r'^["\'\d\[\{(]', rhs):
+            return None
+    return Fix(
+        file=finding.file, line=finding.line, rule=finding.rule,
+        original_code=line, fixed_code="",
+        explanation=f"Removed unused variable: {stripped.split('=')[0].strip()}",
+        source=FixSource.DETERMINISTIC,
+    )
+
+
+def _fix_os_system(line: str, finding: Finding, content: str) -> Optional[Fix]:
+    """Replace os.system() with subprocess.run()."""
+    m = re.search(r'os\.system\((.+)\)', line)
+    if not m:
+        return None
+    cmd_arg = m.group(1).strip()
+    indent = re.match(r'^(\s*)', line).group(1)
+    new_line = f"{indent}subprocess.run({cmd_arg}, shell=True)\n"
+    return Fix(
+        file=finding.file, line=finding.line, rule=finding.rule,
+        original_code=line, fixed_code=new_line,
+        explanation="Replaced os.system() with subprocess.run() (safer, returns exit info)",
+        source=FixSource.DETERMINISTIC,
+    )
+
+
+def _fix_eval_usage(line: str, finding: Finding, content: str) -> Optional[Fix]:
+    """Replace eval() with safe alternative: ast.literal_eval (Python), JSON.parse (JS/TS)."""
+    m = re.search(r'\beval\s*\((.+)\)', line)
+    if not m:
+        return None
+    eval_arg = m.group(1).strip()
+
+    if finding.file.endswith('.py'):
+        replacement = f"ast.literal_eval({eval_arg})"
+        new_line = line[:m.start()] + replacement + line[m.end():]
+        # Add inline warning if not already commented
+        if '#' not in new_line:
+            new_line = new_line.rstrip('\n') + "  # NOTE: only works for literal expressions\n"
+        return Fix(
+            file=finding.file, line=finding.line, rule=finding.rule,
+            original_code=line, fixed_code=new_line,
+            explanation="Replaced eval() with ast.literal_eval() (safe for literals, rejects arbitrary code)",
+            source=FixSource.DETERMINISTIC,
+        )
+
+    if finding.file.endswith(('.js', '.ts', '.jsx', '.tsx')):
+        new_line = line[:m.start()] + f"JSON.parse({eval_arg})" + line[m.end():]
+        return Fix(
+            file=finding.file, line=finding.line, rule=finding.rule,
+            original_code=line, fixed_code=new_line,
+            explanation="Replaced eval() with JSON.parse() (safe — rejects arbitrary code execution)",
+            source=FixSource.DETERMINISTIC,
+        )
+
+    return None
+
+
+def _fix_sql_injection(line: str, finding: Finding, content: str) -> Optional[Fix]:
+    """Replace string-concatenated SQL with parameterized query."""
+    # Only fix Python files
+    if not finding.file.endswith('.py'):
+        return None
+    indent = re.match(r'^(\s*)', line).group(1)
+
+    # Pattern 1: cursor.execute(f"...{var}...")
+    m = re.match(r'^(\s*)(\w+)\.execute\(f(["\'])(.+)\3\)', line.rstrip())
+    if m:
+        call_obj = m.group(2)
+        sql_body = m.group(4)
+        # Extract interpolated variables
+        params = re.findall(r'\{(\w+)\}', sql_body)
+        if not params:
+            return None
+        # Replace {var} with ? placeholders
+        clean_sql = re.sub(r"'\{(\w+)\}'", "?", sql_body)
+        clean_sql = re.sub(r"\{(\w+)\}", "?", clean_sql)
+        param_tuple = ", ".join(params)
+        new_line = f"{indent}{call_obj}.execute(\"{clean_sql}\", ({param_tuple},))\n"
+        return Fix(
+            file=finding.file, line=finding.line, rule=finding.rule,
+            original_code=line, fixed_code=new_line,
+            explanation="Replaced string interpolation with parameterized query",
+            source=FixSource.DETERMINISTIC,
+        )
+
+    # Pattern 2: "SELECT ... WHERE x = " + var
+    m = re.match(r'^(\s*)(\w+)\s*=\s*(["\'])(.+?)\3\s*\+\s*(\w+)', line.rstrip())
+    if m:
+        var_name = m.group(2)
+        sql_body = m.group(4)
+        param_var = m.group(5)
+        new_line = f'{indent}{var_name} = "{sql_body} ?"\n'
+        return Fix(
+            file=finding.file, line=finding.line, rule=finding.rule,
+            original_code=line, fixed_code=new_line,
+            explanation=f"Replaced string concatenation with ? placeholder (pass ({param_var},) as second arg to execute())",
+            source=FixSource.DETERMINISTIC,
+        )
+
+    # Pattern 3: conn.execute("..." + var)
+    m = re.match(r'^(\s*)(\w+)\.execute\((["\'])(.+?)\3\s*\+\s*(\w+)\)', line.rstrip())
+    if m:
+        call_obj = m.group(2)
+        sql_body = m.group(4)
+        param_var = m.group(5)
+        new_line = f'{indent}{call_obj}.execute("{sql_body} ?", ({param_var},))\n'
+        return Fix(
+            file=finding.file, line=finding.line, rule=finding.rule,
+            original_code=line, fixed_code=new_line,
+            explanation="Replaced string concatenation with parameterized query",
+            source=FixSource.DETERMINISTIC,
+        )
+
+    return None
+
+
+def _fix_resource_leak(line: str, finding: Finding, content: str) -> Optional[Fix]:
+    """Add .close() for unclosed resources (connections, cursors, file handles)."""
+    if not finding.file.endswith('.py'):
+        return None
+
+    lines = content.splitlines(keepends=True)
+    line_idx = finding.line - 1
+    if line_idx < 0 or line_idx >= len(lines):
+        return None
+
+    # Extract the variable name from the source line: var = something(...)
+    src = lines[line_idx]
+    m = re.match(r'^(\s*)(\w+)\s*=\s*', src)
+    if not m:
+        return None
+    var_name = m.group(2)
+
+    # Find the containing function
+    func_indent = None
+    for i in range(line_idx - 1, -1, -1):
+        fm = re.match(r'^(\s*)(async\s+)?def\s+', lines[i])
+        if fm:
+            func_indent = fm.group(1)
+            break
+    if func_indent is None:
+        return None
+
+    body_indent = func_indent + "    "
+
+    # Scan forward to find the function body lines and the last return
+    body_lines = []  # (index, stripped) for lines in this function body
+    for i in range(line_idx + 1, len(lines)):
+        stripped = lines[i].strip()
+        if not stripped:
+            continue
+        cur_indent = len(lines[i]) - len(lines[i].lstrip())
+        # Stop at anything at function-level indent or less: decorators, defs, classes, module code
+        if cur_indent <= len(func_indent) and stripped:
+            break
+        body_lines.append((i, stripped))
+
+    if not body_lines:
+        return None
+
+    # Check if the variable is returned — if so, can't close it
+    for idx, stripped in body_lines:
+        if stripped.startswith('return') and var_name in stripped:
+            return None
+
+    # Skip functions with multiple returns or try/except (too complex for safe fix)
+    return_count = sum(1 for _, s in body_lines if s.startswith('return') or s == 'return')
+    has_try = any(s.startswith('try:') for _, s in body_lines)
+    if return_count > 1 or has_try:
+        return None
+
+    # Find the last return in the function body
+    last_return_idx = None
+    for idx, stripped in body_lines:
+        if stripped.startswith('return') or stripped == 'return':
+            last_return_idx = idx
+
+    if last_return_idx is not None:
+        # Insert .close() BEFORE the return
+        return_line = lines[last_return_idx]
+        close_line = f"{body_indent}{var_name}.close()\n"
+        new_code = close_line + return_line
+        return Fix(
+            file=finding.file, line=last_return_idx + 1, rule=finding.rule,
+            original_code=return_line, fixed_code=new_code,
+            explanation=f"Added {var_name}.close() before return to prevent resource leak",
+            source=FixSource.DETERMINISTIC,
+        )
+
+    # No return — add .close() after the last body line
+    last_idx = body_lines[-1][0]
+    last_line = lines[last_idx]
+    close_line = f"{body_indent}{var_name}.close()\n"
+    new_code = last_line.rstrip('\n') + '\n' + close_line
+    return Fix(
+        file=finding.file, line=last_idx + 1, rule=finding.rule,
+        original_code=last_line, fixed_code=new_code,
+        explanation=f"Added {var_name}.close() to prevent resource leak",
+        source=FixSource.DETERMINISTIC,
     )
 
 
@@ -408,6 +707,7 @@ def _fix_exception_swallowed(line: str, finding: Finding, content: str) -> Optio
 
 DETERMINISTIC_FIXERS: dict[str, FixerFn] = {
     "unused-import": _fix_unused_import,
+    "unused-variable": _fix_unused_variable,
     "bare-except": _fix_bare_except,
     "loose-equality": _fix_loose_equality,
     "var-usage": _fix_var_usage,
@@ -423,6 +723,10 @@ DETERMINISTIC_FIXERS: dict[str, FixerFn] = {
     "unreachable-code": _fix_unreachable_code,
     "mutable-default": _fix_mutable_default,
     "exception-swallowed": _fix_exception_swallowed,
+    "resource-leak": _fix_resource_leak,
+    "os-system": _fix_os_system,
+    "eval-usage": _fix_eval_usage,
+    "sql-injection": _fix_sql_injection,
 }
 
 
@@ -632,25 +936,79 @@ def verify_fixes(filepath: str, language: str,
     post_findings = analyze_file_static(filepath, new_content, language,
                                         custom_rules=custom_rules)
 
-    # Build 5-line bucket sets for comparison
-    pre_buckets = {(f.line // 5, f.rule) for f in pre_findings}
-    post_buckets = {(f.line // 5, f.rule) for f in post_findings}
+    # Compare by rule counts: for each rule, how many before vs after.
+    # Increase in count for a rule = new issues. Decrease = resolved.
+    from collections import Counter
+    pre_counts = Counter(f.rule for f in pre_findings)
+    post_counts = Counter(f.rule for f in post_findings)
 
-    resolved = pre_buckets - post_buckets
-    remaining = pre_buckets & post_buckets
-    new = post_buckets - pre_buckets
+    all_rules = set(pre_counts) | set(post_counts)
+    resolved = 0
+    remaining = 0
+    new_issues = 0
+    for rule in all_rules:
+        before = pre_counts.get(rule, 0)
+        after = post_counts.get(rule, 0)
+        if after <= before:
+            resolved += before - after
+            remaining += after
+        else:
+            remaining += before
+            new_issues += after - before
 
     new_findings = []
+    # Only report findings with rules not present at all before
+    pre_rules = set(pre_counts)
     for finding in post_findings:
-        if (finding.line // 5, finding.rule) in new:
+        if finding.rule not in pre_rules:
             new_findings.append(finding.to_dict())
 
     return {
-        "resolved": len(resolved),
-        "remaining": len(remaining),
-        "new_issues": len(new),
+        "resolved": resolved,
+        "remaining": remaining,
+        "new_issues": new_issues,
         "new_findings": new_findings,
     }
+
+
+# ─── Post-fix validation & rollback ──────────────────────────────────
+
+
+def _validate_syntax(filepath: str, content: str, language: str) -> Optional[str]:
+    """Validate syntax of fixed file. Returns error message or None if valid."""
+    if language == "python":
+        try:
+            ast.parse(content, filename=filepath)
+        except SyntaxError as e:
+            return f"Python syntax error: {e.msg} (line {e.lineno})"
+    elif language in ("javascript", "typescript"):
+        # Lightweight check: balanced braces, parens, brackets
+        counts = {'(': 0, '[': 0, '{': 0}
+        closers = {')': '(', ']': '[', '}': '{'}
+        for ch in content:
+            if ch in counts:
+                counts[ch] += 1
+            elif ch in closers:
+                counts[closers[ch]] -= 1
+        for opener, count in counts.items():
+            if count != 0:
+                closer = {v: k for k, v in closers.items()}[opener] if opener in closers.values() else {'(': ')', '[': ']', '{': '}'}[opener]
+                return f"Unbalanced '{opener}'/'{closer}' (off by {count})"
+    return None
+
+
+def _rollback_from_backup(filepath: str, fixes: list[Fix]) -> None:
+    """Restore file from .wiz.bak backup and mark all applied fixes as FAILED."""
+    backup_path = filepath + ".wiz.bak"
+    if os.path.exists(backup_path):
+        try:
+            shutil.copy2(backup_path, filepath)
+            logger.info("Rolled back %s from backup", filepath)
+        except OSError as e:
+            logger.warning("Rollback failed for %s: %s", filepath, e)
+    for fix in fixes:
+        if fix.status == FixStatus.APPLIED:
+            fix.status = FixStatus.FAILED
 
 
 # ─── Main orchestrator ────────────────────────────────────────────────
@@ -720,12 +1078,54 @@ def fix_file(
             applied=0, skipped=0, failed=0,
         )
 
+    # Resolve conflicts between fixers that target the same lines.
+    #
+    # 1. If a variable is both hardcoded-secret AND unused-variable,
+    #    unused-variable wins (delete dead code, don't bother securing it).
+    # 2. Don't remove imports that surviving fixes still need.
+    unused_var_lines = {fix.line for fix in all_fixes if fix.rule == "unused-variable"}
+    all_fixes = [
+        fix for fix in all_fixes
+        if not (fix.rule == "hardcoded-secret" and fix.line in unused_var_lines)
+    ]
+
+    # Check which modules surviving fixes still need
+    modules_needed: set[str] = set()
+    for fix in all_fixes:
+        if fix.rule != "unused-import" and fix.fixed_code:
+            if "os.environ" in fix.fixed_code:
+                modules_needed.add("os")
+            if "ast.literal_eval" in fix.fixed_code:
+                modules_needed.add("ast")
+            if "subprocess.run" in fix.fixed_code:
+                modules_needed.add("subprocess")
+    if modules_needed:
+        all_fixes = [
+            fix for fix in all_fixes
+            if not (fix.rule == "unused-import" and fix.original_code and
+                    any(f"import {mod}" in fix.original_code for mod in modules_needed))
+        ]
+
     # Apply fixes
     all_fixes = apply_fixes(filepath, all_fixes, dry_run=dry_run, create_backup=create_backup)
 
     applied = sum(1 for f in all_fixes if f.status == FixStatus.APPLIED)
     skipped = sum(1 for f in all_fixes if f.status == FixStatus.SKIPPED)
     failed = sum(1 for f in all_fixes if f.status == FixStatus.FAILED)
+
+    # Post-fix syntax validation — rollback if broken
+    if not dry_run and applied > 0:
+        try:
+            with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+                fixed_content = f.read()
+            syntax_err = _validate_syntax(filepath, fixed_content, language)
+            if syntax_err:
+                logger.warning("Syntax validation failed after fix: %s — rolling back", syntax_err)
+                _rollback_from_backup(filepath, all_fixes)
+                applied = 0
+                failed = sum(1 for f in all_fixes if f.status == FixStatus.FAILED)
+        except OSError:
+            pass
 
     llm_cost = 0.0
     if cost_tracker:
@@ -736,6 +1136,12 @@ def fix_file(
     if verify and not dry_run and applied > 0:
         verification = verify_fixes(filepath, language, findings,
                                     custom_rules=custom_rules)
+        # Auto-rollback if fixes introduced new issues
+        if verification and verification.get("new_issues", 0) > 0:
+            logger.warning("Fixes introduced %d new issue(s) — rolling back", verification["new_issues"])
+            _rollback_from_backup(filepath, all_fixes)
+            applied = 0
+            failed = sum(1 for f in all_fixes if f.status == FixStatus.FAILED)
 
     return FixReport(
         root=filepath,
