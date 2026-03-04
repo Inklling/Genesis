@@ -183,16 +183,6 @@ class TestSimilarityScoring:
         # Different calls (weight 0.4 = 0) drops score significantly
         assert score < 0.8
 
-    def test_edit_distance_correctness(self):
-        """_edit_distance computes correct Levenshtein distance."""
-        from dojigiri.semantic.smells import _edit_distance
-
-        assert _edit_distance("", "") == 0
-        assert _edit_distance("abc", "") == 3
-        assert _edit_distance("", "xyz") == 3
-        assert _edit_distance("kitten", "sitting") == 3
-        assert _edit_distance("abc", "abc") == 0
-        assert _edit_distance("abc", "abd") == 1
 
 
 # ---------------------------------------------------------------------------

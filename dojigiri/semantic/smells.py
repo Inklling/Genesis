@@ -1,8 +1,8 @@
 """Architectural smell detection: god classes, feature envy, near-duplicates, long methods.
 
 v1.0.0: Added semantic similarity with normalized signatures (variable names
-stripped). Supplements existing structural hashing with weighted Jaccard on
-call sequences + edit distance on branch patterns.
+stripped). Supplements existing structural hashing with multiset Jaccard on
+call sequences + count-based scope/assignment comparison.
 
 Operates on FileSemantics extracted by ts_semantic.py.
 Returns [] when tree-sitter is not available.
@@ -10,7 +10,6 @@ Returns [] when tree-sitter is not available.
 
 from __future__ import annotations
 
-import hashlib
 from collections import Counter
 from dataclasses import dataclass
 
@@ -250,84 +249,55 @@ def check_near_duplicate_functions(
 class SemanticSignature:
     """Normalized function signature — variable names stripped away."""
     param_count: int
-    call_sequence: tuple[str, ...]  # sorted call names
+    call_sequence: tuple[str, ...]  # sorted call names (with multiplicity)
     assignment_count: int
-    scope_pattern: str  # e.g. "blo-blo-blo" — sequence of block scope types
+    scope_count: int  # number of block scopes in the function
     data_flow_hash: int  # hash of assignment patterns
 
     def similarity(self, other: SemanticSignature) -> float:
-        """Compute similarity score (0-1) using weighted Jaccard + edit distance."""
+        """Compute similarity score (0-1) using multiset Jaccard + count ratios.
+
+        Weights: call_sequence=0.4, scope_count=0.25, assignment=0.15,
+        param=0.1, data_flow=0.1.  Total = 1.0.
+        """
         score = 0.0
-        weight_total = 0.0
 
         # Param count similarity (weight: 0.1)
-        w = 0.1
-        weight_total += w
         if self.param_count == other.param_count:
-            score += w
+            score += 0.1
         elif max(self.param_count, other.param_count) > 0:
-            score += w * (1.0 - abs(self.param_count - other.param_count) /
-                          max(self.param_count, other.param_count))
+            score += 0.1 * (1.0 - abs(self.param_count - other.param_count) /
+                            max(self.param_count, other.param_count))
 
-        # Call sequence Jaccard similarity (weight: 0.4)
-        w = 0.4
-        weight_total += w
-        s1 = set(self.call_sequence)
-        s2 = set(other.call_sequence)
-        if s1 or s2:
-            jaccard = len(s1 & s2) / len(s1 | s2)
-            score += w * jaccard
+        # Call sequence multiset Jaccard (weight: 0.4) — preserves multiplicity
+        c1 = Counter(self.call_sequence)
+        c2 = Counter(other.call_sequence)
+        if c1 or c2:
+            intersection = sum((c1 & c2).values())
+            union = sum((c1 | c2).values())
+            score += 0.4 * (intersection / union)
         else:
-            score += w  # both empty = identical
+            score += 0.4  # both empty = identical
 
         # Assignment count similarity (weight: 0.15)
-        w = 0.15
-        weight_total += w
         max_a = max(self.assignment_count, other.assignment_count)
         if max_a > 0:
-            score += w * (1.0 - abs(self.assignment_count - other.assignment_count) / max_a)
+            score += 0.15 * (1.0 - abs(self.assignment_count - other.assignment_count) / max_a)
         else:
-            score += w
+            score += 0.15
 
-        # Scope pattern edit distance (weight: 0.25)
-        w = 0.25
-        weight_total += w
-        bp1 = self.scope_pattern
-        bp2 = other.scope_pattern
-        if bp1 == bp2:
-            score += w
-        elif bp1 and bp2:
-            # Normalized edit distance
-            max_len = max(len(bp1), len(bp2))
-            dist = _edit_distance(bp1, bp2)
-            score += w * (1.0 - dist / max_len)
-        elif not bp1 and not bp2:
-            score += w
+        # Scope count similarity (weight: 0.25)
+        max_s = max(self.scope_count, other.scope_count)
+        if max_s > 0:
+            score += 0.25 * (1.0 - abs(self.scope_count - other.scope_count) / max_s)
+        else:
+            score += 0.25
 
         # Data flow hash (weight: 0.1)
-        w = 0.1
-        weight_total += w
         if self.data_flow_hash == other.data_flow_hash:
-            score += w
+            score += 0.1
 
-        return score / weight_total if weight_total > 0 else 0.0
-
-
-def _edit_distance(s1: str, s2: str) -> int:
-    """Compute Levenshtein edit distance between two strings."""
-    if len(s1) < len(s2):
-        return _edit_distance(s2, s1)
-    if len(s2) == 0:
-        return len(s1)
-
-    prev = list(range(len(s2) + 1))
-    for i, c1 in enumerate(s1):
-        curr = [i + 1]
-        for j, c2 in enumerate(s2):
-            cost = 0 if c1 == c2 else 1
-            curr.append(min(curr[j] + 1, prev[j + 1] + 1, prev[j] + cost))
-        prev = curr
-    return prev[len(s2)]
+        return score
 
 
 def build_semantic_signature(
@@ -356,24 +326,22 @@ def build_semantic_signature(
     # Call sequence (sorted, normalized)
     call_names = sorted(c.name for c in calls_in_func)
 
-    # Build scope pattern from block scopes
-    scope_types = []
-    for scope in semantics.scopes:
-        if (scope.start_line >= fdef.line and scope.end_line <= fdef.end_line
-                and scope.kind in ("block",)):
-            scope_types.append(scope.kind[:3])  # abbreviated
-
-    scope_pattern = "-".join(scope_types) if scope_types else ""
+    # Count block scopes within this function
+    scope_count = sum(
+        1 for scope in semantics.scopes
+        if scope.start_line >= fdef.line and scope.end_line <= fdef.end_line
+        and scope.kind in ("block",)
+    )
 
     # Data flow hash: hash of (assignment_value_types, call_names)
     flow_parts = [a.value_node_type for a in assignments_in_func] + call_names
-    data_flow_hash = int(hashlib.md5(",".join(flow_parts).encode()).hexdigest()[:8], 16)
+    data_flow_hash = hash(",".join(flow_parts))
 
     return SemanticSignature(
         param_count=len(fdef.params),
         call_sequence=tuple(call_names),
         assignment_count=len(assignments_in_func),
-        scope_pattern=scope_pattern,
+        scope_count=scope_count,
         data_flow_hash=data_flow_hash,
     )
 

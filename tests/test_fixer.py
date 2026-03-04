@@ -1132,6 +1132,34 @@ class TestDeriveExpectedCascades:
         result = derive_expected_cascades(code, "python", [fix])
         assert "unused-import" in result
 
+    def test_replacement_still_uses_import_no_cascade(self):
+        """A fix that replaces code but still uses the import → no cascade."""
+        from dojigiri.fixer import derive_expected_cascades
+        code = "import subprocess\nsubprocess.run('ls', shell=True)\n"
+        fix = Fix(
+            file="test.py", line=2, rule="shell-true",
+            original_code="subprocess.run('ls', shell=True)\n",
+            fixed_code="subprocess.run(['ls'])\n",
+            explanation="Removed shell=True", source=FixSource.DETERMINISTIC,
+            status=FixStatus.APPLIED,
+        )
+        result = derive_expected_cascades(code, "python", [fix])
+        assert "unused-import" not in result
+
+    def test_replacement_removes_import_usage_cascade(self):
+        """A fix that replaces code and no longer uses the import → cascade."""
+        from dojigiri.fixer import derive_expected_cascades
+        code = "import os\nos.system('ls')\n"
+        fix = Fix(
+            file="test.py", line=2, rule="os-system",
+            original_code="os.system('ls')\n",
+            fixed_code="print('disabled')\n",
+            explanation="Replaced os.system", source=FixSource.DETERMINISTIC,
+            status=FixStatus.APPLIED,
+        )
+        result = derive_expected_cascades(code, "python", [fix])
+        assert "unused-import" in result
+
     def test_unused_variable_with_semantics(self):
         """Variable whose only read is on fixed line → expected cascade."""
         from dojigiri.fixer import derive_expected_cascades

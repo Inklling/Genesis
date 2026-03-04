@@ -22,24 +22,44 @@ from .config import (
 # only usage sites. This handles ALL rules automatically.
 
 
-def _get_fix_affected_lines(applied_fixes: list[Fix]) -> set[int]:
-    """Collect all line numbers modified or removed by applied fixes."""
-    affected = set()
+def _get_fix_affected_lines(applied_fixes: list[Fix]) -> tuple[set[int], set[int]]:
+    """Collect line numbers affected by applied fixes.
+
+    Returns (deleted_lines, modified_lines):
+    - deleted_lines: lines where the fix removes content entirely
+    - modified_lines: lines where the fix replaces content (may still use imports)
+
+    This distinction matters for cascade prediction: a deleted line guarantees
+    the usage is gone, but a modified line might still reference the import.
+    """
+    deleted: set[int] = set()
+    modified: set[int] = set()
     for fix in applied_fixes:
         if fix.status != FixStatus.APPLIED:
             continue
         start = fix.line
         end = fix.end_line or fix.line
-        for ln in range(start, end + 1):
-            affected.add(ln)
-    return affected
+        lines = set(range(start, end + 1))
+        if not fix.fixed_code or not fix.fixed_code.strip():
+            deleted |= lines
+        else:
+            modified |= lines
+    return deleted, modified
 
 
-def _derive_unused_imports_python(content: str, affected_lines: set[int]) -> bool:
-    """Check if any Python import's only usages all fall on affected lines.
+def _derive_unused_imports_python(
+    content: str,
+    deleted_lines: set[int],
+    modified_lines: set[int],
+    applied_fixes: list[Fix] | None = None,
+) -> bool:
+    """Check if any Python import's only usages all fall on deleted/modified lines.
 
     Returns True if at least one import will become unused due to fixes.
     Uses Python's ast for accurate import→usage tracking.
+
+    Deleted lines are safe — the usage is definitely gone. Modified lines
+    require checking whether the replacement text still references the import.
     """
     try:
         tree = ast.parse(content)
@@ -80,9 +100,32 @@ def _derive_unused_imports_python(content: str, affected_lines: set[int]) -> boo
                 if root_node.lineno != imported.get(root_node.id):
                     usage_lines[root_node.id].add(root_node.lineno)
 
-    # If any import's usages are ALL on affected lines, it will become unused
+    # Build line → replacement text map for modified lines
+    replacement_text: dict[int, str] = {}
+    if applied_fixes:
+        for fix in applied_fixes:
+            if fix.status != FixStatus.APPLIED and fix.fixed_code and fix.fixed_code.strip():
+                continue
+            start = fix.line
+            end = fix.end_line or fix.line
+            for ln in range(start, end + 1):
+                if ln in modified_lines:
+                    replacement_text[ln] = fix.fixed_code or ""
+
+    all_affected = deleted_lines | modified_lines
     for name, lines in usage_lines.items():
-        if lines and lines.issubset(affected_lines):
+        if not lines or not lines.issubset(all_affected):
+            continue
+        # All usages are on affected lines. Check if any modified line
+        # still references this import in its replacement text.
+        still_used = False
+        for ln in lines:
+            if ln in modified_lines:
+                repl = replacement_text.get(ln, "")
+                if name in repl:
+                    still_used = True
+                    break
+        if not still_used:
             return True
 
     return False
@@ -91,50 +134,66 @@ def _derive_unused_imports_python(content: str, affected_lines: set[int]) -> boo
 def _build_descendant_map(scopes) -> dict[int, set[int]]:
     """Build scope_id → all descendant scope_ids in O(s) time.
 
-    Single pass: builds parent→direct_children adjacency list, then one
-    DFS per root to propagate descendants. Cached result is reused for
-    every assignment lookup.
+    Bottom-up propagation: process leaves first (no children), then propagate
+    each node's descendants to its parent. Each scope is visited exactly once.
     """
-    # parent_id → list of child scope_ids
+    # Build adjacency: parent_id → direct children
     children_of: dict[int, list[int]] = {}
+    parent_of: dict[int, int | None] = {}
     all_ids: set[int] = set()
     for s in scopes:
         all_ids.add(s.scope_id)
+        parent_of[s.scope_id] = s.parent_id
         if s.parent_id is not None:
             children_of.setdefault(s.parent_id, []).append(s.scope_id)
 
-    # For each scope, compute all descendants via iterative DFS
-    result: dict[int, set[int]] = {}
-    for sid in all_ids:
-        if sid in result:
-            continue
-        # Iterative DFS from sid
-        descendants: set[int] = set()
-        stack = list(children_of.get(sid, []))
-        while stack:
-            child = stack.pop()
-            if child not in descendants:
-                descendants.add(child)
-                stack.extend(children_of.get(child, []))
-        result[sid] = descendants
+    # Topological order (leaves first): BFS by in-degree of children
+    child_count: dict[int, int] = {sid: len(children_of.get(sid, [])) for sid in all_ids}
+    queue = [sid for sid, count in child_count.items() if count == 0]
+    result: dict[int, set[int]] = {sid: set() for sid in all_ids}
+
+    while queue:
+        next_queue = []
+        for sid in queue:
+            # Propagate this node's descendants to parent
+            pid = parent_of.get(sid)
+            if pid is not None and pid in result:
+                result[pid].add(sid)
+                result[pid] |= result[sid]
+                child_count[pid] -= 1
+                if child_count[pid] == 0:
+                    next_queue.append(pid)
+        queue = next_queue
 
     return result
 
 
-def _derive_unused_variables(semantics, affected_lines: set[int]) -> bool:
-    """Check if any variable's only read-references all fall on affected lines.
+def _derive_unused_variables(semantics, deleted_lines: set[int]) -> bool:
+    """Check if any variable's only read-references all fall on deleted lines.
 
     Uses the same scope visibility model as check_unused_variables in scope.py:
     for each assignment, collects references from the assignment's scope AND
     all child scopes (since inner scopes can read outer variables). Returns
-    True if at least one variable will become unused due to fixes removing
+    True if at least one variable will become unused due to fixes deleting
     all its readers.
+
+    Only considers deleted lines (not modified) — a modified line might still
+    reference the variable in its replacement text.
     """
     if semantics is None:
         return False
 
     # Build descendant map once, reuse for all assignments
     desc_map = _build_descendant_map(semantics.scopes)
+
+    # Build inverted indexes: name → list[ref], name → list[call]
+    refs_by_name: dict[str, list] = {}
+    for ref in semantics.references:
+        if ref.context in ("read", "call"):
+            refs_by_name.setdefault(ref.name, []).append(ref)
+    calls_by_name: dict[str, list] = {}
+    for call in semantics.function_calls:
+        calls_by_name.setdefault(call.name, []).append(call)
 
     for asgn in semantics.assignments:
         if asgn.is_parameter or asgn.is_augmented:
@@ -149,18 +208,15 @@ def _derive_unused_variables(semantics, affected_lines: set[int]) -> bool:
 
         # Collect all read-reference lines for this variable in visible scopes
         ref_lines: set[int] = set()
-        for ref in semantics.references:
-            if ref.name == asgn.name and ref.scope_id in visible:
-                if ref.context in ("read", "call"):
-                    ref_lines.add(ref.line)
-
-        # Also check function calls (e.g. `my_var()`)
-        for call in semantics.function_calls:
-            if call.name == asgn.name and call.scope_id in visible:
+        for ref in refs_by_name.get(asgn.name, ()):
+            if ref.scope_id in visible:
+                ref_lines.add(ref.line)
+        for call in calls_by_name.get(asgn.name, ()):
+            if call.scope_id in visible:
                 ref_lines.add(call.line)
 
-        # If this variable has readers and ALL are on affected lines → cascade
-        if ref_lines and ref_lines.issubset(affected_lines):
+        # If this variable has readers and ALL are on deleted lines → cascade
+        if ref_lines and ref_lines.issubset(deleted_lines):
             return True
 
     return False
@@ -189,19 +245,20 @@ def derive_expected_cascades(
     if not applied_fixes:
         return set()
 
-    affected_lines = _get_fix_affected_lines(applied_fixes)
-    if not affected_lines:
+    deleted_lines, modified_lines = _get_fix_affected_lines(applied_fixes)
+    if not deleted_lines and not modified_lines:
         return set()
 
     expected: set[str] = set()
 
     # AST-derived: check if any import loses all usages
     if language == "python":
-        if _derive_unused_imports_python(content, affected_lines):
+        if _derive_unused_imports_python(content, deleted_lines, modified_lines, applied_fixes):
             expected.add("unused-import")
 
     # Scope-aware: check if any variable loses all read-references
-    if _derive_unused_variables(semantics, affected_lines):
+    # Only uses deleted lines — modified lines might still reference the variable
+    if _derive_unused_variables(semantics, deleted_lines):
         expected.add("unused-variable")
 
     return expected

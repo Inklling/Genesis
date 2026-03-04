@@ -242,9 +242,11 @@ def scan_quick(
     for fa in analyses:
         if fa.semantics is not None:
             semantics_by_file[fa.path] = fa.semantics
-    if len(semantics_by_file) >= 1:
+    if len(semantics_by_file) >= 2:
         from .semantic.smells import find_semantic_clone_pairs
         clone_pairs = find_semantic_clone_pairs(semantics_by_file)
+        # Dict lookup for intra-file clone insertion (O(1) vs O(N) scan)
+        analysis_by_path = {fa.path: fa for fa in analyses}
         for p in clone_pairs:
             if p.file_a != p.file_b:
                 # Cross-file clone → structured CrossFileFinding
@@ -264,20 +266,19 @@ def scan_quick(
                 ))
             else:
                 # Intra-file clone → regular Finding on the file
-                for fa in analyses:
-                    if fa.path == p.file_a:
-                        fa.findings.append(Finding(
-                            file=p.file_a, line=p.func_a_line,
-                            severity=Severity.INFO, category=Category.STYLE,
-                            source=Source.AST, rule="semantic-clone",
-                            message=(
-                                f"Function '{p.func_a_name}' is semantically similar "
-                                f"({p.similarity:.0%}) to '{p.func_b_name}' "
-                                f"at line {p.func_b_line}"
-                            ),
-                            suggestion="Consider extracting shared logic into a common function",
-                        ))
-                        break
+                fa = analysis_by_path.get(p.file_a)
+                if fa:
+                    fa.findings.append(Finding(
+                        file=p.file_a, line=p.func_a_line,
+                        severity=Severity.INFO, category=Category.STYLE,
+                        source=Source.AST, rule="semantic-clone",
+                        message=(
+                            f"Function '{p.func_a_name}' is semantically similar "
+                            f"({p.similarity:.0%}) to '{p.func_b_name}' "
+                            f"at line {p.func_b_line}"
+                        ),
+                        suggestion="Consider extracting shared logic into a common function",
+                    ))
 
     # Clear semantics references to free memory (not needed after this point)
     for fa in analyses:
