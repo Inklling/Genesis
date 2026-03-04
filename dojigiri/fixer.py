@@ -267,7 +267,8 @@ def _fix_open_without_with(line: str, finding: Finding, content: str) -> Optiona
     lines = content.splitlines(keepends=True)
     line_idx = finding.line - 1
     candidate_lines = []
-    var_pat = re.compile(r'\b' + re.escape(var_name) + r'\b')
+    # Match variable name as a word, but exclude f-string prefixes (f"...", f'...')
+    var_pat = re.compile(r'\b' + re.escape(var_name) + r'\b(?!["\'])')
     indent_len = len(indent)
     for i in range(line_idx + 1, len(lines)):
         subsequent = lines[i]
@@ -291,6 +292,24 @@ def _fix_open_without_with(line: str, finding: Finding, content: str) -> Optiona
         if var_pat.search(cl):
             last_var_use = j
     body_lines = candidate_lines[:last_var_use + 1] if last_var_use >= 0 else []
+
+    # If the last var-use line is a block header (for/if/while/with ending with ':'),
+    # extend to include its indented body — otherwise we'd leave a headless block.
+    if body_lines and body_lines[-1].rstrip().endswith(":"):
+        header_indent = len(body_lines[-1]) - len(body_lines[-1].lstrip())
+        extend_from = last_var_use + 1
+        while extend_from < len(candidate_lines):
+            ext_line = candidate_lines[extend_from]
+            ext_stripped = ext_line.strip()
+            if not ext_stripped:
+                body_lines.append(ext_line)
+                extend_from += 1
+                continue
+            ext_indent = len(ext_line) - len(ext_line.lstrip())
+            if ext_indent <= header_indent:
+                break
+            body_lines.append(ext_line)
+            extend_from += 1
 
     # Strip leading and trailing blank lines from collected body
     while body_lines and not body_lines[0].strip():
