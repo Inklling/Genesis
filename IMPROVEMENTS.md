@@ -1,4 +1,4 @@
-# Wiz Improvements Log
+# Dojigiri Improvements Log
 
 ## Summary
 Implemented 4 major improvements to address technical debt and enhance performance.

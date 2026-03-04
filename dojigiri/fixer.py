@@ -16,6 +16,197 @@ from .config import (
 )
 
 
+# ─── Cascading effect derivation ──────────────────────────────────────
+# Instead of a static rule→rule whitelist, we analyze the AST to derive
+# which imports/variables will become unused after fixes modify their
+# only usage sites. This handles ALL rules automatically.
+
+
+def _get_fix_affected_lines(applied_fixes: list[Fix]) -> set[int]:
+    """Collect all line numbers modified or removed by applied fixes."""
+    affected = set()
+    for fix in applied_fixes:
+        if fix.status != FixStatus.APPLIED:
+            continue
+        start = fix.line
+        end = fix.end_line or fix.line
+        for ln in range(start, end + 1):
+            affected.add(ln)
+    return affected
+
+
+def _derive_unused_imports_python(content: str, affected_lines: set[int]) -> bool:
+    """Check if any Python import's only usages all fall on affected lines.
+
+    Returns True if at least one import will become unused due to fixes.
+    Uses Python's ast for accurate import→usage tracking.
+    """
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return False
+
+    # Build: name → import_line
+    imported: dict[str, int] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                name = alias.asname or alias.name
+                imported[name] = node.lineno
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == "__future__":
+                continue
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                name = alias.asname or alias.name
+                imported[name] = node.lineno
+
+    if not imported:
+        return False
+
+    # Build: name → set of usage lines (excluding the import line itself)
+    usage_lines: dict[str, set[int]] = {name: set() for name in imported}
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in imported:
+            if node.lineno != imported.get(node.id):
+                usage_lines[node.id].add(node.lineno)
+        elif isinstance(node, ast.Attribute):
+            root_node = node
+            while isinstance(root_node, ast.Attribute):
+                root_node = root_node.value  # type: ignore[assignment]
+            if isinstance(root_node, ast.Name) and root_node.id in imported:
+                if root_node.lineno != imported.get(root_node.id):
+                    usage_lines[root_node.id].add(root_node.lineno)
+
+    # If any import's usages are ALL on affected lines, it will become unused
+    for name, lines in usage_lines.items():
+        if lines and lines.issubset(affected_lines):
+            return True
+
+    return False
+
+
+def _build_descendant_map(scopes) -> dict[int, set[int]]:
+    """Build scope_id → all descendant scope_ids in O(s) time.
+
+    Single pass: builds parent→direct_children adjacency list, then one
+    DFS per root to propagate descendants. Cached result is reused for
+    every assignment lookup.
+    """
+    # parent_id → list of child scope_ids
+    children_of: dict[int, list[int]] = {}
+    all_ids: set[int] = set()
+    for s in scopes:
+        all_ids.add(s.scope_id)
+        if s.parent_id is not None:
+            children_of.setdefault(s.parent_id, []).append(s.scope_id)
+
+    # For each scope, compute all descendants via iterative DFS
+    result: dict[int, set[int]] = {}
+    for sid in all_ids:
+        if sid in result:
+            continue
+        # Iterative DFS from sid
+        descendants: set[int] = set()
+        stack = list(children_of.get(sid, []))
+        while stack:
+            child = stack.pop()
+            if child not in descendants:
+                descendants.add(child)
+                stack.extend(children_of.get(child, []))
+        result[sid] = descendants
+
+    return result
+
+
+def _derive_unused_variables(semantics, affected_lines: set[int]) -> bool:
+    """Check if any variable's only read-references all fall on affected lines.
+
+    Uses the same scope visibility model as check_unused_variables in scope.py:
+    for each assignment, collects references from the assignment's scope AND
+    all child scopes (since inner scopes can read outer variables). Returns
+    True if at least one variable will become unused due to fixes removing
+    all its readers.
+    """
+    if semantics is None:
+        return False
+
+    # Build descendant map once, reuse for all assignments
+    desc_map = _build_descendant_map(semantics.scopes)
+
+    for asgn in semantics.assignments:
+        if asgn.is_parameter or asgn.is_augmented:
+            continue
+        if asgn.name.startswith("_"):
+            continue
+        if asgn.value_node_type == "self_attr":
+            continue
+
+        # Visible scopes: the assignment's scope + all descendants
+        visible = {asgn.scope_id} | desc_map.get(asgn.scope_id, set())
+
+        # Collect all read-reference lines for this variable in visible scopes
+        ref_lines: set[int] = set()
+        for ref in semantics.references:
+            if ref.name == asgn.name and ref.scope_id in visible:
+                if ref.context in ("read", "call"):
+                    ref_lines.add(ref.line)
+
+        # Also check function calls (e.g. `my_var()`)
+        for call in semantics.function_calls:
+            if call.name == asgn.name and call.scope_id in visible:
+                ref_lines.add(call.line)
+
+        # If this variable has readers and ALL are on affected lines → cascade
+        if ref_lines and ref_lines.issubset(affected_lines):
+            return True
+
+    return False
+
+
+def derive_expected_cascades(
+    content: str,
+    language: str,
+    applied_fixes: list[Fix],
+    semantics=None,
+) -> set[str]:
+    """Derive rule names expected to appear as side-effects of applied fixes.
+
+    Analyzes which imports/variables lose all usages due to fix-modified lines.
+    Returns set of rule names (e.g. 'unused-import') to exclude from rollback.
+
+    This replaces a static rule→rule whitelist with structural analysis:
+    any fix that removes the only usage of an import or variable automatically
+    predicts the cascade, regardless of which rule triggered the fix.
+
+    Args:
+        semantics: Optional FileSemantics for scope-aware variable analysis.
+            When provided, unused-variable detection is precise (scope-aware).
+            When None, unused-variable cascade is not predicted.
+    """
+    if not applied_fixes:
+        return set()
+
+    affected_lines = _get_fix_affected_lines(applied_fixes)
+    if not affected_lines:
+        return set()
+
+    expected: set[str] = set()
+
+    # AST-derived: check if any import loses all usages
+    if language == "python":
+        if _derive_unused_imports_python(content, affected_lines):
+            expected.add("unused-import")
+
+    # Scope-aware: check if any variable loses all read-references
+    if _derive_unused_variables(semantics, affected_lines):
+        expected.add("unused-variable")
+
+    return expected
+
+
 # ─── String-context helpers ───────────────────────────────────────────
 
 
@@ -1533,16 +1724,23 @@ def apply_fixes(
 
 def verify_fixes(filepath: str, language: str,
                  pre_findings: list[Finding],
-                 custom_rules=None) -> dict:
+                 custom_rules=None,
+                 allowed_cascades: set[str] | None = None) -> dict:
     """Re-scan a file after fixes and compare before/after.
 
     Uses 5-line bucket matching to determine which issues were resolved
     and whether any new issues were introduced.
 
+    Args:
+        allowed_cascades: Set of rule names (e.g. {'unused-import'}) that are
+            expected side-effects of fixes and should not trigger rollback.
+            Computed by derive_expected_cascades() from AST analysis.
+
     Returns dict with:
       - resolved: int (issues that were fixed)
       - remaining: int (issues still present)
-      - new_issues: int (issues introduced by fixes)
+      - new_issues: int (issues introduced by fixes — excludes expected cascades)
+      - cascaded: int (new issues that are expected cascades, not counted)
       - new_findings: list of new Finding dicts
     """
     from .detector import analyze_file_static
@@ -1551,11 +1749,14 @@ def verify_fixes(filepath: str, language: str,
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
             new_content = f.read()
     except OSError:
-        return {"resolved": 0, "remaining": 0, "new_issues": 0, "new_findings": [],
-                "error": f"Could not re-read {filepath}"}
+        return {"resolved": 0, "remaining": 0, "new_issues": 0, "cascaded": 0,
+                "new_findings": [], "error": f"Could not re-read {filepath}"}
 
     post_findings = analyze_file_static(filepath, new_content, language,
                                         custom_rules=custom_rules)
+
+    if not allowed_cascades:
+        allowed_cascades = set()
 
     # Compare by rule counts: for each rule, how many before vs after.
     # Increase in count for a rule = new issues. Decrease = resolved.
@@ -1570,6 +1771,7 @@ def verify_fixes(filepath: str, language: str,
     resolved = 0
     remaining = 0
     new_issues = 0
+    cascaded = 0
     for rule in all_rules:
         if rule in info_only_rules:
             continue  # skip info-only rules that fixers intentionally introduce
@@ -1579,8 +1781,12 @@ def verify_fixes(filepath: str, language: str,
             resolved += before - after
             remaining += after
         else:
-            remaining += before
-            new_issues += after - before
+            delta = after - before
+            if rule in allowed_cascades:
+                cascaded += delta
+            else:
+                remaining += before
+                new_issues += delta
 
     new_findings = []
     # Only report findings with rules not present at all before
@@ -1593,6 +1799,7 @@ def verify_fixes(filepath: str, language: str,
         "resolved": resolved,
         "remaining": remaining,
         "new_issues": new_issues,
+        "cascaded": cascaded,
         "new_findings": new_findings,
     }
 
@@ -1893,8 +2100,13 @@ def fix_file(
     # Verify fixes if actually applied
     verification = None
     if verify and not dry_run and applied > 0:
+        # Derive expected cascades from AST analysis of original content + applied fixes
+        applied_fix_list = [f for f in all_fixes if f.status == FixStatus.APPLIED]
+        allowed_cascades = derive_expected_cascades(
+            content, language, applied_fix_list, semantics=semantics)
         verification = verify_fixes(filepath, language, findings,
-                                    custom_rules=custom_rules)
+                                    custom_rules=custom_rules,
+                                    allowed_cascades=allowed_cascades)
         # Auto-rollback if fixes introduced new issues
         if verification and verification.get("new_issues", 0) > 0:
             logger.warning("Fixes introduced %d new issue(s) — rolling back", verification["new_issues"])

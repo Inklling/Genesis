@@ -1,6 +1,6 @@
-# Wiz Test Suite
+# Dojigiri Test Suite
 
-Comprehensive test suite for the Wiz static analysis tool.
+Comprehensive test suite for the Dojigiri static analysis tool.
 
 ## Test Coverage
 
@@ -16,7 +16,7 @@ The test suite includes 120+ tests covering:
   - Tests for unused imports, exception swallowing, shadowed builtins, complexity detection, etc.
 
 ### Integration Tests
-- **test_analyzer.py** - File collection, language detection, .wizignore support
+- **test_analyzer.py** - File collection, language detection, .doji-ignore support
 - **test_storage.py** - Caching, report persistence, and auto-pruning
   - Note: Documents dead functions that should be removed (lines 291-295)
 
@@ -49,7 +49,7 @@ pytest tests/test_detector.py::test_python_ast_unused_import -v
 ### Run with Coverage (optional)
 ```bash
 pip install pytest-cov
-pytest tests --cov=wiz --cov-report=html
+pytest tests --cov=dojigiri --cov-report=html
 ```
 
 ## Test Fixtures
@@ -89,7 +89,7 @@ These should be removed as they are no longer called after the analyzer.py refac
 From the handoff notes (priority order):
 1. ✅ **Tests** - Complete (this test suite)
 2. **Baseline/diff mode** - Show only new findings since last scan
-3. **Config file** - .wiz.toml for project-level settings
+3. **Config file** - .doji.toml for project-level settings
 4. **Deep scan cache** - Cache support for deep scans
 5. **Block comments** - Support for /* */, """ """, <!-- -->
 6. **SARIF output** - GitHub Code Scanning integration

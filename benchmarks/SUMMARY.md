@@ -1,7 +1,7 @@
-# Wiz Real-World Validation Summary
+# Dojigiri Real-World Validation Summary
 
 **Date:** 2026-03-03
-**Wiz version:** 1.0.0
+**Dojigiri version:** 1.0.0
 **Repos tested:** Flask, FastAPI, Express.js
 
 ## Results After FP Reduction (Two Rounds)

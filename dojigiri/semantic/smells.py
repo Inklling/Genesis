@@ -387,16 +387,28 @@ def build_semantic_signature(
     )
 
 
-def check_semantic_clones(
+@dataclass
+class ClonePair:
+    """Structured result from semantic clone detection."""
+    file_a: str
+    func_a_name: str
+    func_a_line: int
+    file_b: str
+    func_b_name: str
+    func_b_line: int
+    similarity: float
+
+
+def find_semantic_clone_pairs(
     semantics_by_file: dict[str, FileSemantics],
     similarity_threshold: float = 0.85,
-) -> list[Finding]:
-    """Find functions with high semantic similarity across files.
+) -> list[ClonePair]:
+    """Find function pairs with high semantic similarity.
 
-    Uses SemanticSignature instead of structural hashing for more nuanced
-    detection. Supplements check_near_duplicate_functions().
+    Returns structured ClonePair objects — callers decide how to present them
+    (as Finding, CrossFileFinding, etc). No string parsing needed.
     """
-    findings = []
+    pairs: list[ClonePair] = []
     sigs: list[tuple[str, FunctionDef, SemanticSignature]] = []
 
     for filepath, sem in semantics_by_file.items():
@@ -405,13 +417,12 @@ def check_semantic_clones(
             if sig:
                 sigs.append((filepath, fdef, sig))
 
-    seen_pairs = set()
+    seen = set()
     for i in range(len(sigs)):
         for j in range(i + 1, len(sigs)):
             file_a, func_a, sig_a = sigs[i]
             file_b, func_b, sig_b = sigs[j]
 
-            # Skip same function
             if file_a == file_b and func_a.line == func_b.line:
                 continue
 
@@ -421,22 +432,42 @@ def check_semantic_clones(
                     (file_a, func_a.line),
                     (file_b, func_b.line),
                 ]))
-                if pair_key in seen_pairs:
+                if pair_key in seen:
                     continue
-                seen_pairs.add(pair_key)
+                seen.add(pair_key)
 
-                findings.append(Finding(
-                    file=file_a,
-                    line=func_a.line,
-                    severity=Severity.INFO,
-                    category=Category.STYLE,
-                    source=Source.AST,
-                    rule="semantic-clone",
-                    message=(
-                        f"Function '{func_a.name}' is semantically similar "
-                        f"({sim:.0%}) to '{func_b.name}' in {file_b}:{func_b.line}"
-                    ),
-                    suggestion="Consider extracting shared logic into a common function",
+                pairs.append(ClonePair(
+                    file_a=file_a, func_a_name=func_a.name, func_a_line=func_a.line,
+                    file_b=file_b, func_b_name=func_b.name, func_b_line=func_b.line,
+                    similarity=sim,
                 ))
 
-    return findings
+    return pairs
+
+
+def check_semantic_clones(
+    semantics_by_file: dict[str, FileSemantics],
+    similarity_threshold: float = 0.85,
+) -> list[Finding]:
+    """Find functions with high semantic similarity — returns Finding objects.
+
+    Thin wrapper over find_semantic_clone_pairs() for backward compatibility
+    with single-file callers (detector.py) that expect Finding lists.
+    """
+    pairs = find_semantic_clone_pairs(semantics_by_file, similarity_threshold)
+    return [
+        Finding(
+            file=p.file_a,
+            line=p.func_a_line,
+            severity=Severity.INFO,
+            category=Category.STYLE,
+            source=Source.AST,
+            rule="semantic-clone",
+            message=(
+                f"Function '{p.func_a_name}' is semantically similar "
+                f"({p.similarity:.0%}) to '{p.func_b_name}' in {p.file_b}:{p.func_b_line}"
+            ),
+            suggestion="Consider extracting shared logic into a common function",
+        )
+        for p in pairs
+    ]

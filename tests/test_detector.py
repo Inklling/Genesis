@@ -605,3 +605,24 @@ def my_function():
     # Should only detect the api_key on line 7, not the one inside docstring on line 5
     assert len(secret_findings) == 1
     assert secret_findings[0].line == 7
+
+
+# ─── Regression tests ────────────────────────────────────────────────
+
+
+def test_block_comment_mixed_delimiters():
+    """REGRESSION: ''' block should not be closed by triple double-quotes."""
+    code = "'''\nThis is a block comment\napi_key = \"sk_test_12345678\"\n'''\nreal_code = 1\n"
+    findings = run_regex_checks(code, "test.py", "python")
+    # The api_key line is inside a ''' block — should NOT be detected
+    secret_findings = [f for f in findings if f.rule == "hardcoded-secret"]
+    assert len(secret_findings) == 0
+
+
+def test_block_comment_double_not_closed_by_single():
+    """REGRESSION: \"\"\" block should not be closed by '''."""
+    code = '"""\napi_key = "sk_test_12345678"\n\'\'\'\nstill_in_block = True\n"""\nreal_code = 1\n'
+    findings = run_regex_checks(code, "test.py", "python")
+    # Everything between \"\"\" and \"\"\" is a block comment
+    secret_findings = [f for f in findings if f.rule == "hardcoded-secret"]
+    assert len(secret_findings) == 0

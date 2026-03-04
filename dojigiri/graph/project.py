@@ -233,11 +233,12 @@ def analyze_project(
         call_graph = build_call_graph(graph, semantics_by_file)
 
         from .callgraph import find_dead_functions, find_arg_count_mismatches
-        from ..semantic.smells import check_near_duplicate_functions
+        from ..semantic.smells import check_near_duplicate_functions, check_semantic_clones
 
         cross_file_static_findings.extend(find_dead_functions(call_graph, graph))
         cross_file_static_findings.extend(find_arg_count_mismatches(call_graph, semantics_by_file))
         cross_file_static_findings.extend(check_near_duplicate_functions(semantics_by_file))
+        cross_file_static_findings.extend(check_semantic_clones(semantics_by_file))
 
         # v0.10.0: Cross-file contract inference
         try:

@@ -1,9 +1,21 @@
-"""Shared test fixtures for Wiz test suite."""
+"""Shared test fixtures for Dojigiri test suite."""
 
 import pytest
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 from dojigiri.config import Finding, FileAnalysis, ScanReport, Severity, Category, Source
+
+
+@pytest.fixture(autouse=True)
+def _isolate_metrics(tmp_path):
+    """Prevent tests from writing metrics to the real ~/.dojigiri/metrics/ dir."""
+    with patch("dojigiri.metrics.METRICS_DIR", tmp_path / "metrics"):
+        # Also ensure no session leaks between tests
+        import dojigiri.metrics as m
+        m._current_session = None
+        yield
+        m._current_session = None
 
 
 @pytest.fixture

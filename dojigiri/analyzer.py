@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 logger = logging.getLogger(__name__)
 
 from .config import (
-    Finding, FileAnalysis, ScanReport, Severity, Confidence, Category, Source,
+    Finding, FileAnalysis, ScanReport, CrossFileFinding, Severity, Confidence, Category, Source,
     LANGUAGE_EXTENSIONS, SKIP_DIRS, SKIP_FILES, MAX_FILE_SIZE,
     SENSITIVE_FILE_PATTERNS,
     load_ignore_patterns,
@@ -160,13 +160,19 @@ def _analyze_single_file(
     except OSError:
         return None, None, True
 
-    findings = analyze_file_static(fp_str, content, lang or "", custom_rules=custom_rules)
+    result = analyze_file_static(fp_str, content, lang or "", custom_rules=custom_rules,
+                                 return_semantics=True)
+    if isinstance(result, tuple):
+        findings, semantics, _type_map = result
+    else:
+        findings, semantics = result, None
     fa = FileAnalysis(
         path=fp_str,
         language=lang or "",
         lines=content.count("\n") + 1,
         findings=findings,
         file_hash=current_hash,
+        semantics=semantics,
     )
     return fa, current_hash, False
 
@@ -230,10 +236,57 @@ def scan_quick(
     if use_cache:
         save_cache(cache)
 
-    total_findings = sum(len(fa.findings) for fa in analyses)
+    # Cross-file semantic clone detection
+    cross_file_findings: list[CrossFileFinding] = []
+    semantics_by_file = {}
+    for fa in analyses:
+        if fa.semantics is not None:
+            semantics_by_file[fa.path] = fa.semantics
+    if len(semantics_by_file) > 1:
+        from .semantic.smells import find_semantic_clone_pairs
+        clone_pairs = find_semantic_clone_pairs(semantics_by_file)
+        for p in clone_pairs:
+            if p.file_a != p.file_b:
+                # Cross-file clone → structured CrossFileFinding
+                cross_file_findings.append(CrossFileFinding(
+                    source_file=p.file_a,
+                    target_file=p.file_b,
+                    line=p.func_a_line,
+                    target_line=p.func_b_line,
+                    severity=Severity.INFO,
+                    category=Category.STYLE,
+                    rule="semantic-clone",
+                    message=(
+                        f"Function '{p.func_a_name}' is semantically similar "
+                        f"({p.similarity:.0%}) to '{p.func_b_name}'"
+                    ),
+                    suggestion="Consider extracting shared logic into a common function",
+                ))
+            else:
+                # Intra-file clone → regular Finding on the file
+                for fa in analyses:
+                    if fa.path == p.file_a:
+                        fa.findings.append(Finding(
+                            file=p.file_a, line=p.func_a_line,
+                            severity=Severity.INFO, category=Category.STYLE,
+                            source=Source.AST, rule="semantic-clone",
+                            message=(
+                                f"Function '{p.func_a_name}' is semantically similar "
+                                f"({p.similarity:.0%}) to '{p.func_b_name}' "
+                                f"at line {p.func_b_line}"
+                            ),
+                            suggestion="Consider extracting shared logic into a common function",
+                        ))
+                        break
+
+    # Clear semantics references to free memory (not needed after this point)
+    for fa in analyses:
+        fa.semantics = None
+
+    total_findings = sum(len(fa.findings) for fa in analyses) + len(cross_file_findings)
     critical = sum(fa.critical_count for fa in analyses)
     warnings = sum(fa.warning_count for fa in analyses)
-    info = sum(fa.info_count for fa in analyses)
+    info = sum(fa.info_count for fa in analyses) + len(cross_file_findings)
 
     report_obj = ScanReport(
         root=str(root),
@@ -245,6 +298,7 @@ def scan_quick(
         warnings=warnings,
         info=info,
         file_analyses=analyses,
+        cross_file_findings=cross_file_findings,
     )
 
     save_report(report_obj)

@@ -48,6 +48,14 @@ class CostTracker:
         with self._lock:
             self.total_input_tokens += input_tokens
             self.total_output_tokens += output_tokens
+        # Record in session metrics (best-effort)
+        try:
+            from .metrics import get_session
+            session = get_session()
+            if session:
+                session.record_llm_call(input_tokens, output_tokens)
+        except Exception:
+            pass
 
     @property
     def total_cost(self) -> float:
@@ -345,7 +353,7 @@ def _parse_debug_response(text: str) -> Optional[dict]:
 
 MAX_CHUNK_TOKENS = 100_000  # warn threshold
 _RETRY_DELAYS = [1, 2, 4]  # exponential backoff seconds
-_RETRIABLE_STATUS_CODES = {429, 503, 529}
+_RETRIABLE_STATUS_CODES = {408, 429, 500, 502, 503, 529}
 
 
 def _api_call_with_retry(client: Any, **kwargs: Any) -> Any:

@@ -1,4 +1,4 @@
-# Wiz Benchmark: Express.js
+# Dojigiri Benchmark: Express.js
 
 **Repository:** expressjs/express (v5.x)
 **Files scanned:** 153 files (lib/ + test/ + examples/)

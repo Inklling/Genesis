@@ -60,7 +60,7 @@ UNIVERSAL_RULES: list[Rule] = _compile([
     ),
     # SQL injection patterns (f-strings, %, +, .format)
     (
-        r"""(?i)(?:execute|cursor\.execute|query)\s*\(\s*(?:f['"]|['"].*%s|['"].*\+\s*\w+|['"].*\{)""",
+        r"""(?i)(?:execute|cursor\.execute|query)\s*\(\s*(?:f['"]|['"].*?%s|['"].*?\+\s*\w+|['"].*?\{)""",
         Severity.CRITICAL, Category.SECURITY,
         "sql-injection",
         "Possible SQL injection — string interpolation in query",

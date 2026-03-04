@@ -1,4 +1,4 @@
-# Wiz v0.2.0 - Production Ready ✅
+# Dojigiri v0.2.0 - Production Ready ✅
 
 ## Completed Items
 
@@ -114,7 +114,7 @@ pytest tests -v --cov=wiz
 
 **Status**: ✅ **READY FOR PRODUCTION**
 
-Wiz is now production-ready with:
+Dojigiri is now production-ready with:
 - Comprehensive testing
 - Fixed known issues
 - Performance optimizations

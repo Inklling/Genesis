@@ -284,3 +284,127 @@ class TestCloneDetection:
         for f in findings:
             assert f.rule == "semantic-clone"
             assert f.severity == Severity.INFO
+
+
+# ---------------------------------------------------------------------------
+# CROSS-FILE CLONE DETECTION (wired through scan_quick)
+# ---------------------------------------------------------------------------
+
+@needs_tree_sitter
+class TestCrossFileCloneIntegration:
+    """Test that cross-file clones are detected through the scan pipeline."""
+
+    def test_two_file_clone_detected(self):
+        """Two files with identical functions should produce a cross-file clone."""
+        from dojigiri.semantic.smells import check_semantic_clones
+
+        calls = ["fetch_data", "parse_result", "validate", "transform", "store", "notify"]
+        code_a = _make_function("load_csv", calls)
+        code_b = _make_function("load_api", calls)
+
+        sem_a = _sem(code_a, "csv_loader.py")
+        sem_b = _sem(code_b, "api_fetcher.py")
+
+        findings = check_semantic_clones({
+            "csv_loader.py": sem_a,
+            "api_fetcher.py": sem_b,
+        })
+
+        assert len(findings) >= 1
+        f = findings[0]
+        assert f.rule == "semantic-clone"
+        assert "csv_loader.py" in f.file or "api_fetcher.py" in f.file
+        # The message should reference the other file
+        assert "csv_loader.py" in f.message or "api_fetcher.py" in f.message
+
+    def test_different_functions_no_clone(self):
+        """Two files with unrelated functions should not produce a clone finding."""
+        from dojigiri.semantic.smells import check_semantic_clones
+
+        code_a = _make_function("do_thing", ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"])
+        code_b = _make_function("do_other", ["one", "two", "three", "four", "five", "six"])
+
+        sem_a = _sem(code_a, "file_a.py")
+        sem_b = _sem(code_b, "file_b.py")
+
+        findings = check_semantic_clones({
+            "file_a.py": sem_a,
+            "file_b.py": sem_b,
+        })
+
+        assert len(findings) == 0
+
+
+# ---------------------------------------------------------------------------
+# STRUCTURED CLONE PAIRS (find_semantic_clone_pairs)
+# ---------------------------------------------------------------------------
+
+@needs_tree_sitter
+class TestFindSemanticClonePairs:
+    """Tests for the structured ClonePair API that scan_quick depends on."""
+
+    def test_returns_clone_pair_objects(self):
+        """find_semantic_clone_pairs returns ClonePair with typed fields."""
+        from dojigiri.semantic.smells import find_semantic_clone_pairs, ClonePair
+
+        calls = ["fetch_data", "parse_result", "validate", "transform", "store", "notify"]
+        code_a = _make_function("load_csv", calls)
+        code_b = _make_function("load_api", calls)
+
+        sem_a = _sem(code_a, "csv_loader.py")
+        sem_b = _sem(code_b, "api_fetcher.py")
+
+        pairs = find_semantic_clone_pairs({
+            "csv_loader.py": sem_a,
+            "api_fetcher.py": sem_b,
+        })
+
+        assert len(pairs) == 1
+        p = pairs[0]
+        assert isinstance(p, ClonePair)
+        # Structured fields — no string parsing needed
+        assert {p.file_a, p.file_b} == {"csv_loader.py", "api_fetcher.py"}
+        assert {p.func_a_name, p.func_b_name} == {"load_csv", "load_api"}
+        assert p.func_a_line > 0
+        assert p.func_b_line > 0
+        assert 0.85 <= p.similarity <= 1.0
+
+    def test_no_pairs_for_different_functions(self):
+        """Unrelated functions produce no pairs."""
+        from dojigiri.semantic.smells import find_semantic_clone_pairs
+
+        code_a = _make_function("do_thing", ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"])
+        code_b = _make_function("do_other", ["one", "two", "three", "four", "five", "six"])
+
+        pairs = find_semantic_clone_pairs({
+            "file_a.py": _sem(code_a, "file_a.py"),
+            "file_b.py": _sem(code_b, "file_b.py"),
+        })
+
+        assert len(pairs) == 0
+
+    def test_intra_file_pairs_have_same_file(self):
+        """Two similar functions in the same file → pair with file_a == file_b."""
+        from dojigiri.semantic.smells import find_semantic_clone_pairs
+
+        calls = ["fetch", "parse", "validate", "transform", "store", "notify"]
+        code = _make_function("handler_a", calls) + "\n" + _make_function("handler_b", calls)
+
+        pairs = find_semantic_clone_pairs({"app.py": _sem(code, "app.py")})
+
+        assert len(pairs) == 1
+        assert pairs[0].file_a == pairs[0].file_b == "app.py"
+
+    def test_wrapper_consistency(self):
+        """check_semantic_clones wrapper returns same count as find_semantic_clone_pairs."""
+        from dojigiri.semantic.smells import find_semantic_clone_pairs, check_semantic_clones
+
+        calls = ["fetch", "parse", "validate", "transform", "store", "notify"]
+        code_a = _make_function("proc_a", calls)
+        code_b = _make_function("proc_b", calls)
+        sem_map = {"a.py": _sem(code_a, "a.py"), "b.py": _sem(code_b, "b.py")}
+
+        pairs = find_semantic_clone_pairs(sem_map)
+        findings = check_semantic_clones(sem_map)
+
+        assert len(pairs) == len(findings)

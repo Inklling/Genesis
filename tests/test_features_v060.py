@@ -1,4 +1,4 @@
-"""Tests for Wiz v0.6.0 features: custom rules, fix verification,
+"""Tests for Dojigiri v0.6.0 features: custom rules, fix verification,
 parallel deep scan, pre-commit hooks."""
 
 import os

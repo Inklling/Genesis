@@ -99,6 +99,9 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 def cmd_scan(args: argparse.Namespace) -> int:
     """Run a code scan (quick or deep)."""
+    from .metrics import start_session, end_session, save_session, format_summary
+    session = start_session()
+
     root = Path(args.path).resolve()
     if not root.exists():
         print(f"Error: path '{args.path}' does not exist", file=sys.stderr)
@@ -206,6 +209,14 @@ def cmd_scan(args: argparse.Namespace) -> int:
         rpt.print_sarif(report_obj)
     else:
         rpt.print_report(report_obj, duration=scan_duration)
+
+    # Save metrics
+    session = end_session()
+    if session:
+        try:
+            save_session(session)
+        except OSError:
+            pass
 
     if report_obj.critical > 0:
         return 2  # exit code 2 = critical issues found
@@ -491,6 +502,9 @@ def cmd_optimize(args: argparse.Namespace) -> int:
 
 def cmd_fix(args: argparse.Namespace) -> int:
     """Fix detected issues in code (deterministic + optional LLM)."""
+    from .metrics import start_session, end_session, save_session
+    session = start_session()
+
     root = Path(args.path).resolve()
     if not root.exists():
         print(f"Error: path '{args.path}' does not exist", file=sys.stderr)
@@ -570,8 +584,10 @@ def cmd_fix(args: argparse.Namespace) -> int:
             print(f"  Warning: cannot read {filepath}: {e}", file=sys.stderr)
             continue
 
-        # Get findings via static analysis
-        findings = analyze_file_static(str(filepath), content, file_lang)
+        # Get findings via static analysis (with semantics for context-aware fixing)
+        result = analyze_file_static(str(filepath), content, file_lang,
+                                     return_semantics=True)
+        findings, file_semantics, file_type_map = result
 
         # Apply severity filter
         if min_severity:
@@ -587,6 +603,7 @@ def cmd_fix(args: argparse.Namespace) -> int:
             create_backup=create_backup, rules=rules,
             cost_tracker=cost_tracker,
             verify=verify, custom_rules=custom_rules,
+            semantics=file_semantics, type_map=file_type_map,
         )
 
         all_fixes.extend(report.fixes)
@@ -621,6 +638,14 @@ def cmd_fix(args: argparse.Namespace) -> int:
         rpt.print_fix_json(aggregate)
     else:
         rpt.print_fix_report(aggregate, dry_run=dry_run)
+
+    # Save metrics
+    session = end_session()
+    if session:
+        try:
+            save_session(session)
+        except OSError:
+            pass
 
     return 0
 
@@ -913,6 +938,17 @@ When to use Dojigiri vs your own analysis:
     return 0
 
 
+def cmd_stats(args) -> int:
+    """Show metrics history and trend analysis."""
+    from .metrics import load_history, format_history_summary
+
+    days = getattr(args, "days", 30)
+    limit = getattr(args, "limit", 10)
+    sessions = load_history(days=days)
+    print(format_history_summary(sessions, limit=limit))
+    return 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="doji",
@@ -1043,6 +1079,12 @@ def main() -> None:
     # mcp
     p_mcp = subparsers.add_parser("mcp", help="Start the MCP server (for Claude Code integration)")
     p_mcp.set_defaults(func=cmd_mcp)
+
+    # stats
+    p_stats = subparsers.add_parser("stats", help="Show scan/fix metrics history and trends")
+    p_stats.add_argument("--days", type=int, default=30, help="How many days of history (default: 30)")
+    p_stats.add_argument("--limit", type=int, default=10, help="Number of sessions to show (default: 10)")
+    p_stats.set_defaults(func=cmd_stats)
 
     # setup-claude
     p_setup_claude = subparsers.add_parser("setup-claude",

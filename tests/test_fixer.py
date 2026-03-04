@@ -22,6 +22,7 @@ from dojigiri.fixer import (
     _fix_mutable_default, _fix_exception_swallowed,
     _in_multiline_string, _pattern_outside_strings,
     apply_fixes, fix_file, generate_llm_fixes,
+    derive_expected_cascades,
 )
 
 
@@ -926,3 +927,320 @@ class TestFixCLI:
         assert "--llm" in out
         assert "--rules" in out
         assert "--no-backup" in out
+
+
+# ─── Regression tests ────────────────────────────────────────────────
+
+
+class TestRegressions:
+    def test_type_comparison_no_double_parens(self):
+        """REGRESSION: type((x)) == dict should not produce isinstance(((x)), dict)."""
+        fix = _fix_type_comparison("    if type((x)) == dict:\n", _make_finding("type-comparison"), "")
+        assert fix is not None
+        assert "isinstance(x, dict)" in fix.fixed_code
+        assert "((" not in fix.fixed_code
+
+    def test_eval_import_no_imports_file(self):
+        """REGRESSION: eval fix should handle files with no imports."""
+        from dojigiri.fixer import _fix_eval_usage
+        content = 'def process(data):\n    return eval(data)\n'
+        finding = _make_finding("eval-usage", line=2, file="script.py")
+        result = _fix_eval_usage(
+            content.splitlines(keepends=True)[1], finding, content,
+        )
+        assert result is not None
+        if isinstance(result, list):
+            import_fix = [f for f in result if "import ast" in (f.fixed_code or "")]
+            assert len(import_fix) == 1
+
+    def test_mutable_default_multiple_params(self):
+        """REGRESSION: def f(a=[], b={}) should fix both params, not just the first."""
+        content = 'def f(a=[], b={}):\n    pass\n'
+        fix = _fix_mutable_default(
+            content.splitlines(keepends=True)[0],
+            _make_finding("mutable-default", line=1), content,
+        )
+        assert fix is not None
+        assert "a=None" in fix.fixed_code
+        assert "b=None" in fix.fixed_code
+        assert "if a is None:" in fix.fixed_code
+        assert "if b is None:" in fix.fixed_code
+
+    def test_in_multiline_string_ast_based(self):
+        """REGRESSION: _in_multiline_string should use AST for accurate detection."""
+        content = 'x = """\nsome content with eval() inside\n"""\ny = 1\n'
+        assert _in_multiline_string(content, 2) is True
+        assert _in_multiline_string(content, 4) is False
+
+    def test_verify_fixes_severity_enum(self, temp_dir):
+        """REGRESSION: verify_fixes should handle Severity enum comparison correctly."""
+        from dojigiri.fixer import verify_fixes
+        fp = temp_dir / "test.py"
+        fp.write_text('import os\nx = 1\n', encoding="utf-8")
+        from dojigiri.config import Finding, Severity, Category, Source
+        pre_findings = [Finding(
+            file=str(fp), line=1, severity=Severity.WARNING,
+            category=Category.DEAD_CODE, source=Source.AST,
+            rule="unused-import", message="test",
+        )]
+        # Should not raise — severity comparison uses getattr
+        result = verify_fixes(str(fp), "python", pre_findings)
+        assert isinstance(result, dict)
+        assert "resolved" in result
+
+    def test_verify_fixes_allowed_cascade_not_counted(self, temp_dir):
+        """Allowed cascade rules should not trigger rollback."""
+        from dojigiri.fixer import verify_fixes
+        fp = temp_dir / "test.py"
+        # After fix: os.system removed, but import os still present → unused-import appears
+        fp.write_text('import os\nprint("done")\n', encoding="utf-8")
+
+        # Pre-findings: had os-system, no unused-import
+        pre_findings = [Finding(
+            file=str(fp), line=2, severity=Severity.CRITICAL,
+            category=Category.SECURITY, source=Source.STATIC,
+            rule="os-system", message="os.system() call",
+        )]
+        # The post-scan will find unused-import for `import os`
+        result = verify_fixes(str(fp), "python", pre_findings,
+                              allowed_cascades={"unused-import"})
+        assert result["new_issues"] == 0
+        assert result["cascaded"] > 0
+
+    def test_verify_fixes_genuine_issue_still_triggers(self, temp_dir):
+        """A genuinely new issue alongside a cascade should still count."""
+        from dojigiri.fixer import verify_fixes
+        fp = temp_dir / "test.py"
+        # File with a real new issue: eval usage + unused import
+        fp.write_text('import os\nimport sys\neval("1")\n', encoding="utf-8")
+
+        pre_findings = [Finding(
+            file=str(fp), line=2, severity=Severity.CRITICAL,
+            category=Category.SECURITY, source=Source.STATIC,
+            rule="os-system", message="os.system() call",
+        )]
+        # Allow unused-import cascade, but eval-usage is NOT allowed
+        result = verify_fixes(str(fp), "python", pre_findings,
+                              allowed_cascades={"unused-import"})
+        assert result["new_issues"] > 0
+
+    def test_verify_fixes_no_cascades_behaves_normally(self, temp_dir):
+        """Without allowed_cascades, all new issues are counted (backward compat)."""
+        from dojigiri.fixer import verify_fixes
+        fp = temp_dir / "test.py"
+        fp.write_text('import os\nprint("done")\n', encoding="utf-8")
+
+        pre_findings = [Finding(
+            file=str(fp), line=2, severity=Severity.CRITICAL,
+            category=Category.SECURITY, source=Source.STATIC,
+            rule="os-system", message="os.system() call",
+        )]
+        # No allowed_cascades → unused-import counts as new_issues
+        result = verify_fixes(str(fp), "python", pre_findings)
+        assert result["cascaded"] == 0
+        assert result["new_issues"] > 0
+
+
+class TestDeriveExpectedCascades:
+    """Tests for AST-derived cascade detection."""
+
+    def test_import_only_used_on_fixed_line(self):
+        """Import whose only usage is on a line being fixed → expected cascade."""
+        from dojigiri.fixer import derive_expected_cascades
+        code = "import os\nos.system('ls')\nx = 1\n"
+        fix = Fix(
+            file="test.py", line=2, rule="os-system",
+            original_code="os.system('ls')\n", fixed_code="",
+            explanation="Removed os.system", source=FixSource.DETERMINISTIC,
+            status=FixStatus.APPLIED,
+        )
+        result = derive_expected_cascades(code, "python", [fix])
+        assert "unused-import" in result
+
+    def test_import_used_elsewhere_no_cascade(self):
+        """Import used on non-fixed lines → no cascade expected."""
+        from dojigiri.fixer import derive_expected_cascades
+        code = "import os\nos.system('ls')\nprint(os.getcwd())\n"
+        fix = Fix(
+            file="test.py", line=2, rule="os-system",
+            original_code="os.system('ls')\n", fixed_code="",
+            explanation="Removed os.system", source=FixSource.DETERMINISTIC,
+            status=FixStatus.APPLIED,
+        )
+        result = derive_expected_cascades(code, "python", [fix])
+        assert "unused-import" not in result
+
+    def test_multiple_imports_one_cascades(self):
+        """Only the import losing all usages triggers cascade, not others."""
+        from dojigiri.fixer import derive_expected_cascades
+        code = "import os\nimport sys\nos.system('ls')\nprint(sys.argv)\n"
+        fix = Fix(
+            file="test.py", line=3, rule="os-system",
+            original_code="os.system('ls')\n", fixed_code="",
+            explanation="Removed os.system", source=FixSource.DETERMINISTIC,
+            status=FixStatus.APPLIED,
+        )
+        result = derive_expected_cascades(code, "python", [fix])
+        # os loses all usages → unused-import expected
+        assert "unused-import" in result
+
+    def test_line_deletion_without_semantics_no_variable_cascade(self):
+        """Without semantics, unused-variable cascade is NOT predicted (precise mode)."""
+        from dojigiri.fixer import derive_expected_cascades
+        code = "x = compute()\nprint(x)\n"
+        fix = Fix(
+            file="test.py", line=2, rule="console-log",
+            original_code="print(x)\n", fixed_code="",
+            explanation="Removed print", source=FixSource.DETERMINISTIC,
+            status=FixStatus.APPLIED,
+        )
+        # No semantics passed → no unused-variable prediction
+        result = derive_expected_cascades(code, "python", [fix])
+        assert "unused-variable" not in result
+
+    def test_no_applied_fixes_no_cascades(self):
+        """No applied fixes → no expected cascades."""
+        from dojigiri.fixer import derive_expected_cascades
+        result = derive_expected_cascades("import os\n", "python", [])
+        assert result == set()
+
+    def test_non_python_no_import_analysis(self):
+        """Non-Python files don't get import cascade analysis."""
+        from dojigiri.fixer import derive_expected_cascades
+        code = "const os = require('os');\nos.exec('ls');\n"
+        fix = Fix(
+            file="test.js", line=2, rule="os-system",
+            original_code="os.exec('ls');\n", fixed_code="",
+            explanation="Removed", source=FixSource.DETERMINISTIC,
+            status=FixStatus.APPLIED,
+        )
+        # Without semantics, no cascades can be derived for non-Python
+        result = derive_expected_cascades(code, "javascript", [fix])
+        assert "unused-import" not in result
+        assert "unused-variable" not in result
+
+    def test_from_import_cascade(self):
+        """from X import Y where Y is only used on fixed line → cascade."""
+        from dojigiri.fixer import derive_expected_cascades
+        code = "from subprocess import run\nrun('ls', shell=True)\n"
+        fix = Fix(
+            file="test.py", line=2, rule="shell-true",
+            original_code="run('ls', shell=True)\n", fixed_code="",
+            explanation="Removed", source=FixSource.DETERMINISTIC,
+            status=FixStatus.APPLIED,
+        )
+        result = derive_expected_cascades(code, "python", [fix])
+        assert "unused-import" in result
+
+    def test_unused_variable_with_semantics(self):
+        """Variable whose only read is on fixed line → expected cascade."""
+        from dojigiri.fixer import derive_expected_cascades
+        try:
+            from dojigiri.semantic.core import extract_semantics
+        except ImportError:
+            pytest.skip("tree-sitter not available")
+
+        code = "x = compute()\nprint(x)\n"
+        sem = extract_semantics(code, "test.py", "python")
+        fix = Fix(
+            file="test.py", line=2, rule="console-log",
+            original_code="print(x)\n", fixed_code="",
+            explanation="Removed print", source=FixSource.DETERMINISTIC,
+            status=FixStatus.APPLIED,
+        )
+        result = derive_expected_cascades(code, "python", [fix], semantics=sem)
+        assert "unused-variable" in result
+
+    def test_unused_variable_still_read_elsewhere(self):
+        """Variable read on non-fixed lines → no cascade."""
+        from dojigiri.fixer import derive_expected_cascades
+        try:
+            from dojigiri.semantic.core import extract_semantics
+        except ImportError:
+            pytest.skip("tree-sitter not available")
+
+        code = "x = compute()\nprint(x)\nreturn x\n"
+        sem = extract_semantics(code, "test.py", "python")
+        fix = Fix(
+            file="test.py", line=2, rule="console-log",
+            original_code="print(x)\n", fixed_code="",
+            explanation="Removed print", source=FixSource.DETERMINISTIC,
+            status=FixStatus.APPLIED,
+        )
+        result = derive_expected_cascades(code, "python", [fix], semantics=sem)
+        assert "unused-variable" not in result
+
+    def test_unused_variable_inner_scope_read(self):
+        """Variable assigned in outer scope, read in inner scope on fixed line.
+
+        This tests the scope-crossing case: the old (name, scope_id) grouping
+        would miss this because the reference's scope_id differs from the
+        assignment's scope_id. The fix uses visible_scopes (assignment scope +
+        all descendants) to correctly match cross-scope references.
+        """
+        from dojigiri.fixer import derive_expected_cascades
+        try:
+            from dojigiri.semantic.core import extract_semantics
+        except ImportError:
+            pytest.skip("tree-sitter not available")
+
+        code = (
+            "def outer():\n"
+            "    data = load()\n"
+            "    def inner():\n"
+            "        print(data)\n"
+            "    inner()\n"
+        )
+        sem = extract_semantics(code, "test.py", "python")
+        # Fix removes line 4 (the only read of `data`, inside inner scope)
+        fix = Fix(
+            file="test.py", line=4, rule="console-log",
+            original_code="        print(data)\n", fixed_code="",
+            explanation="Removed print", source=FixSource.DETERMINISTIC,
+            status=FixStatus.APPLIED,
+        )
+        result = derive_expected_cascades(code, "python", [fix], semantics=sem)
+        assert "unused-variable" in result, (
+            "Should detect cascade: data's only read (in child scope) is on the fixed line"
+        )
+
+
+class TestFixFileIntegration:
+    """Integration: fix_file end-to-end with cascade rollback prevention."""
+
+    @pytest.fixture
+    def temp_dir(self, tmp_path):
+        return tmp_path
+
+    def test_os_system_fix_no_rollback(self, temp_dir):
+        """fix_file should NOT rollback when removing os.system causes unused-import.
+
+        This is the core integration test: the full path from fix_file →
+        derive_expected_cascades → verify_fixes must correctly identify
+        unused-import as an expected cascade and not trigger rollback.
+        """
+        fp = temp_dir / "vuln.py"
+        code = "import os\nos.system('rm -rf /')\n"
+        fp.write_text(code, encoding="utf-8")
+
+        findings = [Finding(
+            file=str(fp), line=2, severity=Severity.CRITICAL,
+            category=Category.SECURITY, source=Source.STATIC,
+            rule="os-system", message="os.system() call",
+        )]
+
+        report = fix_file(
+            str(fp), code, "python", findings,
+            dry_run=False, create_backup=True, verify=True,
+        )
+
+        # The fix should be applied, NOT rolled back
+        assert report.applied > 0, "Fix should have been applied"
+        assert report.verification is not None
+        # Key assertion: no rollback despite unused-import appearing
+        assert report.verification.get("rolled_back") is not True, (
+            "Should not rollback — unused-import is an expected cascade of os-system fix"
+        )
+        assert report.verification.get("cascaded", 0) > 0, (
+            "Should detect at least one cascaded finding"
+        )

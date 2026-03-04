@@ -182,6 +182,7 @@ class FileAnalysis:
     lines: int
     findings: list[Finding] = field(default_factory=list)
     file_hash: Optional[str] = None
+    semantics: Optional[object] = None  # semantic.core.FileSemantics (not serialized)
 
     @property
     def critical_count(self) -> int:
@@ -207,11 +208,12 @@ class ScanReport:
     warnings: int
     info: int
     file_analyses: list[FileAnalysis] = field(default_factory=list)
+    cross_file_findings: list["CrossFileFinding"] = field(default_factory=list)
     llm_cost_usd: float = 0.0
     timestamp: str = ""
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "root": self.root,
             "mode": self.mode,
             "files_scanned": self.files_scanned,
@@ -232,6 +234,9 @@ class ScanReport:
                 for fa in self.file_analyses
             ],
         }
+        if self.cross_file_findings:
+            d["cross_file_findings"] = [cf.to_dict() for cf in self.cross_file_findings]
+        return d
 
 
 @dataclass
@@ -304,6 +309,16 @@ class ProjectAnalysis:
             "llm_cost_usd": self.llm_cost_usd,
             "timestamp": self.timestamp,
         }
+
+
+@dataclass
+class FixContext:
+    """Context passed to all fixers — provides semantic data when available."""
+    content: str
+    finding: "Finding"
+    semantics: Optional[object] = None  # semantic.core.FileSemantics
+    type_map: Optional[object] = None   # semantic.types.FileTypeMap
+    language: str = "python"
 
 
 # Fix config

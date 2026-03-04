@@ -20,6 +20,15 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+nul
+
+# Build artifacts
+*.bak
+*.xml
 
 # Dojigiri storage (local scan results)
 .dojigiri/
+
+# Benchmark results and cloned repos
+benchmarks/results/
+benchmarks/.repos/

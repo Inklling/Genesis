@@ -76,7 +76,7 @@ class TestToSarif:
         run = sarif["runs"][0]
         assert "tool" in run
         assert "results" in run
-        assert run["tool"]["driver"]["name"] == "Wiz"
+        assert run["tool"]["driver"]["name"] == "Dojigiri"
 
     def test_sarif_results_count(self):
         """SARIF results match the number of findings."""

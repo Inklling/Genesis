@@ -1,4 +1,4 @@
-# Wiz Benchmark: FastAPI
+# Dojigiri Benchmark: FastAPI
 
 **Repository:** fastapi/fastapi (v0.115.x)
 **Files scanned:** 46 Python files (fastapi/)

@@ -95,6 +95,7 @@ def run_regex_checks(content: str, filepath: str, language: str,
 
     # Block comment state tracking
     in_block_comment = False
+    block_comment_delimiter = None  # tracks which delimiter opened the block
     # Block comment delimiters by language
     if language == "python":
         block_open, block_close = '"""', '"""'
@@ -130,6 +131,7 @@ def run_regex_checks(content: str, filepath: str, language: str,
                 rest = stripped[idx + len(block_open):]
                 if block_close not in rest:  # type: ignore[operator]  # block_close is non-None here
                     in_block_comment = True
+                    block_comment_delimiter = block_close
                     continue
             elif alt_block_open:
                 # For Python ''' - same logic
@@ -138,18 +140,19 @@ def run_regex_checks(content: str, filepath: str, language: str,
                     alt_start_match = stripped.startswith(alt_block_open)
                 else:
                     alt_start_match = alt_block_open in stripped
-                
+
                 if alt_start_match:
                     idx = stripped.index(alt_block_open)
                     rest = stripped[idx + len(alt_block_open):]
                     if alt_block_close not in rest:  # type: ignore[operator]  # alt_block_close is non-None here
                         in_block_comment = True
+                        block_comment_delimiter = alt_block_close
                         continue
         elif in_block_comment:
-            if block_close and block_close in stripped:
+            # Only close on the delimiter that opened the block
+            if block_comment_delimiter and block_comment_delimiter in stripped:
                 in_block_comment = False
-            elif alt_block_close and alt_block_close in stripped:
-                in_block_comment = False
+                block_comment_delimiter = None
             continue  # Skip lines inside block comments entirely
 
         is_comment = any(stripped.startswith(p) for p in comment_prefixes)
@@ -569,8 +572,14 @@ def _check_function(node: ast.FunctionDef, filepath: str, findings: list[Finding
 
 
 def analyze_file_static(filepath: str, content: str, language: str,
-                        custom_rules=None) -> list[Finding]:
-    """Run all static checks (regex + tree-sitter AST + Python AST fallback + semantic)."""
+                        custom_rules=None, return_semantics: bool = False):
+    """Run all static checks (regex + tree-sitter AST + Python AST fallback + semantic).
+
+    If return_semantics=True, returns (findings, semantics, type_map) tuple instead of just findings.
+    """
+    import time as _time
+    _scan_start = _time.perf_counter()
+
     findings = run_regex_checks(content, filepath, language, custom_rules=custom_rules)
 
     # AST checks: tree-sitter for all languages, Python ast as supplement/fallback
@@ -588,6 +597,7 @@ def analyze_file_static(filepath: str, content: str, language: str,
     # v0.8.0: Semantic analysis (scope, taint, smells)
     from .semantic.core import extract_semantics
     from .semantic.lang_config import get_config
+    _file_type_map = None  # captured for return_semantics
     semantics = extract_semantics(content, filepath, language)
     if semantics:
         from .semantic.scope import (
@@ -625,7 +635,8 @@ def analyze_file_static(filepath: str, content: str, language: str,
             try:
                 from .semantic.types import infer_types
                 from .semantic.nullsafety import check_null_safety
-                type_map = infer_types(semantics, source_bytes, config, cfgs=cfgs if config else None)
+                _file_type_map = infer_types(semantics, source_bytes, config, cfgs=cfgs if config else None)
+                type_map = _file_type_map
                 if type_map and type_map.types:
                     findings.extend(check_null_safety(
                         semantics, type_map, config, filepath, cfgs=cfgs if config else None))
@@ -649,4 +660,20 @@ def analyze_file_static(filepath: str, content: str, language: str,
     # Sort by severity (critical first), then line number
     severity_order = {Severity.CRITICAL: 0, Severity.WARNING: 1, Severity.INFO: 2}
     unique.sort(key=lambda f: (severity_order[f.severity], f.line))
+
+    # Record metrics
+    _scan_ms = (_time.perf_counter() - _scan_start) * 1000
+    try:
+        from .metrics import get_session
+        session = get_session()
+        if session:
+            session.files_scanned += 1
+            session.scan_duration_ms += _scan_ms
+            for f in unique:
+                session.record_finding(f.rule, f.severity.value)
+    except Exception:
+        pass  # metrics are best-effort
+
+    if return_semantics:
+        return unique, semantics, _file_type_map
     return unique

@@ -79,7 +79,7 @@ def project_dir(tmp_path):
 
 # ─── doji_scan ─────────────────────────────────────────────────────────
 
-class TestWizScan:
+class TestDojiScan:
     def test_scan_finds_issues(self, buggy_py_file):
         result = doji_scan(buggy_py_file)
         assert "Findings:" in result
@@ -145,7 +145,7 @@ class TestWizScan:
 
 # ─── doji_scan_file ────────────────────────────────────────────────────
 
-class TestWizScanFile:
+class TestDojiScanFile:
     def test_scan_file_finds_issues(self, buggy_py_file):
         result = doji_scan_file(buggy_py_file)
         assert "File:" in result
@@ -181,7 +181,7 @@ class TestWizScanFile:
 
 # ─── doji_fix ──────────────────────────────────────────────────────────
 
-class TestWizFix:
+class TestDojiFix:
     def test_fix_finds_fixable_issues(self, buggy_py_file):
         result = doji_fix(buggy_py_file, min_severity="info")
         assert "dry run" in result
@@ -233,7 +233,7 @@ class TestWizFix:
 
 # ─── doji_explain ──────────────────────────────────────────────────────
 
-class TestWizExplain:
+class TestDojiExplain:
     def test_explain_returns_summary(self, buggy_py_file):
         result = doji_explain(buggy_py_file)
         assert "Explanation:" in result
@@ -257,7 +257,7 @@ class TestWizExplain:
 
 # ─── doji_analyze_project ─────────────────────────────────────────────
 
-class TestWizAnalyzeProject:
+class TestDojiAnalyzeProject:
     def test_analyze_project_basic(self, project_dir):
         result = doji_analyze_project(project_dir)
         assert "Project:" in result
