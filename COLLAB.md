@@ -3,9 +3,11 @@
 ## Status
 **Last agent**: Claude
 **Date**: 2026-03-05
-**What they did**: v1.1.0 defense/enterprise feature pack. LLM backend abstraction (Anthropic/OpenAI/Ollama), CWE/NIST compliance mappings, HTML/PDF reports with classification markings, compliance profiles, offline mode. 1035 tests pass. Pushed `9442213`.
+**What they did**: Added 87 tests for v1.1.0 modules (compliance 19, llm_backend 42, report_html 26). Bumped build_exe.py version to 1.1.0. Nuitka build verified — doji.exe 37MB, all new features working (CWE in rules, classification banners, HTML output, offline mode). Full suite: 1122 passed, 2 skipped. Pushed `eafcffa`.
 
-**Previous**: Claude — Added inline suppression (`doji:ignore`) and `doji rules` command.
+**Previous**: Claude — v1.1.0 defense/enterprise feature pack. LLM backend abstraction, CWE/NIST, HTML/PDF reports, classification, profiles, offline mode.
+
+**Before that**: Claude — Added inline suppression (`doji:ignore`) and `doji rules` command.
 **Before that**: Oz — Koryu-demo review, fixed multi-line unused-variable removal
 
 ## Review
