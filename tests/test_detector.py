@@ -6,6 +6,8 @@ from dojigiri.detector import (
     run_python_ast_checks,
     analyze_file_static,
     _count_branches,
+    _is_line_suppressed,
+    _parse_line_suppression,
 )
 from dojigiri.config import Severity, Category, Source
 
@@ -626,3 +628,161 @@ def test_block_comment_double_not_closed_by_single():
     # Everything between \"\"\" and \"\"\" is a block comment
     secret_findings = [f for f in findings if f.rule == "hardcoded-secret"]
     assert len(secret_findings) == 0
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# INLINE SUPPRESSION — doji:ignore
+# ───────────────────────────────────────────────────────────────────────────
+
+def test_inline_suppress_specific_rule_python():
+    """doji:ignore(os-system) should suppress os-system finding."""
+    code = 'os.system("ls")  # doji:ignore(os-system)\n'
+    findings = run_regex_checks(code, "test.py", "python")
+    assert not any(f.rule == "os-system" for f in findings)
+
+
+def test_inline_suppress_all_rules_python():
+    """doji:ignore (no rule) should suppress ALL findings on the line."""
+    code = 'x = eval("code")  # doji:ignore\n'
+    findings = run_regex_checks(code, "test.py", "python")
+    assert not any(f.rule == "eval-usage" for f in findings)
+
+
+def test_inline_suppress_wrong_rule_not_suppressed():
+    """doji:ignore(wrong-rule) should NOT suppress os-system."""
+    code = 'os.system("ls")  # doji:ignore(wrong-rule)\n'
+    findings = run_regex_checks(code, "test.py", "python")
+    assert any(f.rule == "os-system" for f in findings)
+
+
+def test_inline_suppress_javascript():
+    """doji:ignore(eval-usage) in JS comment should suppress."""
+    code = 'eval(code)  // doji:ignore(eval-usage)\n'
+    findings = run_regex_checks(code, "test.js", "javascript")
+    assert not any(f.rule == "eval-usage" for f in findings)
+
+
+def test_inline_suppress_no_comment_does_not_suppress():
+    """A line with no comment at all should never be suppressed, even if
+    a string on the line contains doji:ignore text."""
+    code = 'x = "doji:ignore(os-system)"; os.system("ls")\n'
+    findings = run_regex_checks(code, "test.py", "python")
+    assert any(f.rule == "os-system" for f in findings)
+
+
+def test_inline_suppress_ast_finding():
+    """doji:ignore should suppress AST-based findings via analyze_file_static."""
+    code = 'import unused_module  # doji:ignore(unused-import)\nimport os\nos.path.exists("f")\n'
+    findings = analyze_file_static("test.py", code, "python")
+    unused = [f for f in findings if f.rule == "unused-import"]
+    # unused_module is suppressed, os is used — no unused-import findings
+    assert len(unused) == 0
+
+
+def test_inline_suppress_does_not_affect_other_lines():
+    """Suppression on one line should not affect other lines."""
+    code = 'os.system("a")  # doji:ignore(os-system)\nos.system("b")\n'
+    findings = run_regex_checks(code, "test.py", "python")
+    os_findings = [f for f in findings if f.rule == "os-system"]
+    assert len(os_findings) == 1
+    assert os_findings[0].line == 2
+
+
+def test_inline_suppress_excluded_from_report_count():
+    """Suppressed findings should not appear in analyze_file_static output."""
+    code = 'x = eval("1")  # doji:ignore(eval-usage)\ny = eval("2")\n'
+    findings = analyze_file_static("test.py", code, "python")
+    eval_findings = [f for f in findings if f.rule == "eval-usage"]
+    assert len(eval_findings) == 1
+    assert eval_findings[0].line == 2
+
+
+def test_is_line_suppressed_helper():
+    """Unit test for _is_line_suppressed."""
+    lines = [
+        'os.system("ls")  # doji:ignore(os-system)',
+        'eval("code")  # doji:ignore',
+        'normal_code()',
+        'x = "doji:ignore(os-system)"; os.system("ls")',
+    ]
+    assert _is_line_suppressed(lines, 1, "os-system", "python") is True
+    assert _is_line_suppressed(lines, 1, "other-rule", "python") is False
+    assert _is_line_suppressed(lines, 2, "anything", "python") is True
+    assert _is_line_suppressed(lines, 3, "any-rule", "python") is False
+    # String containing doji:ignore — no actual comment
+    assert _is_line_suppressed(lines, 4, "os-system", "python") is False
+
+
+def test_inline_suppress_multi_rule():
+    """doji:ignore(rule-a, rule-b) should suppress both named rules."""
+    code = 'os.system("ls")  # doji:ignore(os-system, shell-true)\n'
+    findings = run_regex_checks(code, "test.py", "python")
+    assert not any(f.rule == "os-system" for f in findings)
+
+
+def test_inline_suppress_multi_rule_partial():
+    """Multi-rule suppression should not suppress unlisted rules."""
+    # os-system fires here; eval-usage is listed but os-system is not
+    code = 'os.system("ls")  # doji:ignore(eval-usage, shell-true)\n'
+    findings = run_regex_checks(code, "test.py", "python")
+    assert any(f.rule == "os-system" for f in findings)
+
+
+def test_parse_line_suppression_returns_set_for_multi():
+    """_parse_line_suppression should return a set for comma-separated rules."""
+    line = 'code()  # doji:ignore(rule-a, rule-b, rule-c)'
+    result = _parse_line_suppression(line, "python")
+    assert isinstance(result, set)
+    assert result == {"rule-a", "rule-b", "rule-c"}
+
+
+def test_parse_line_suppression_returns_true_for_bare():
+    """_parse_line_suppression should return True for bare doji:ignore."""
+    line = 'code()  # doji:ignore'
+    result = _parse_line_suppression(line, "python")
+    assert result is True
+
+
+def test_parse_line_suppression_returns_none_for_no_directive():
+    """_parse_line_suppression should return None when no directive found."""
+    line = 'code()  # just a comment'
+    result = _parse_line_suppression(line, "python")
+    assert result is None
+
+
+def test_inline_suppress_not_in_block_comment():
+    """doji:ignore inside a block comment/docstring should NOT suppress later code."""
+    code = '"""\n# doji:ignore(eval-usage)\n"""\nx = eval("code")\n'
+    findings = analyze_file_static("test.py", code, "python")
+    eval_findings = [f for f in findings if f.rule == "eval-usage"]
+    assert len(eval_findings) == 1
+    assert eval_findings[0].line == 4
+
+
+def test_inline_suppress_rightmost_comment_wins():
+    """When a string contains # before the real comment, the real comment wins."""
+    # The string "hello #world" has a # but the real comment is the trailing one
+    line = 'x = "hello #world"  # doji:ignore(os-system)'
+    result = _parse_line_suppression(line, "python")
+    assert isinstance(result, set)
+    assert "os-system" in result
+
+
+def test_inline_suppress_string_with_fake_doji_ignore():
+    """A string containing doji:ignore before the real trailing comment should not confuse parser."""
+    # The string has #doji:ignore(wrong) but the real comment has no directive
+    code = 'x = "test #doji:ignore(os-system)"; os.system("ls")  # unrelated comment\n'
+    findings = run_regex_checks(code, "test.py", "python")
+    # os-system should fire — doji:ignore is in the string, not in the real comment
+    assert any(f.rule == "os-system" for f in findings)
+
+
+def test_inline_suppress_partial_on_multi_rule_line():
+    """When two rules fire on one line, suppressing one should leave the other."""
+    # This line triggers both eval-usage (critical/security) and os-system (warning/security).
+    # Only os-system is suppressed.
+    code = 'os.system(eval("x"))  # doji:ignore(os-system)\n'
+    findings = run_regex_checks(code, "test.py", "python")
+    rules_found = {f.rule for f in findings}
+    assert "os-system" not in rules_found
+    assert "eval-usage" in rules_found

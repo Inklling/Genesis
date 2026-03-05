@@ -938,6 +938,50 @@ When to use Dojigiri vs your own analysis:
     return 0
 
 
+def cmd_rules(args: argparse.Namespace) -> int:
+    """List all available rules."""
+    import json
+    from .languages import list_all_rules
+
+    rules = list_all_rules()
+    if args.lang:
+        lang_filter = args.lang.lower()
+        rules = [
+            r for r in rules
+            if "all" in r["languages"] or lang_filter in r["languages"]
+        ]
+
+    if args.output == "json":
+        print(json.dumps(rules, indent=2))
+        return 0
+
+    # Text table output
+    if not rules:
+        print("No rules found.")
+        return 0
+
+    # Column widths
+    name_w = max(len(r["name"]) for r in rules)
+    sev_w = max(len(r["severity"]) for r in rules)
+    cat_w = max(len(r["category"]) for r in rules)
+    name_w = max(name_w, 4)  # min header width
+
+    header = f"{'RULE':<{name_w}}  {'SEVERITY':<{sev_w}}  {'CATEGORY':<{cat_w}}  LANGUAGES"
+    print(header)
+    print("\u2500" * len(header))
+    for r in rules:
+        langs = ", ".join(r["languages"])
+        print(f"{r['name']:<{name_w}}  {r['severity']:<{sev_w}}  {r['category']:<{cat_w}}  {langs}")
+
+    # Summary
+    from collections import Counter
+    sev_counts = Counter(r["severity"] for r in rules)
+    sev_order = {"critical": 0, "warning": 1, "info": 2}
+    parts = [f"{count} {sev}" for sev, count in sorted(sev_counts.items(), key=lambda x: sev_order.get(x[0], 9))]
+    print(f"\n{len(rules)} rules ({', '.join(parts)})")
+    return 0
+
+
 def cmd_stats(args) -> int:
     """Show metrics history and trend analysis."""
     from .metrics import load_history, format_history_summary
@@ -1085,6 +1129,13 @@ def main() -> None:
     p_stats.add_argument("--days", type=int, default=30, help="How many days of history (default: 30)")
     p_stats.add_argument("--limit", type=int, default=10, help="Number of sessions to show (default: 10)")
     p_stats.set_defaults(func=cmd_stats)
+
+    # rules
+    p_rules = subparsers.add_parser("rules", help="List all available rules")
+    p_rules.add_argument("--lang", help="Filter by language (e.g., python, javascript)")
+    p_rules.add_argument("--output", choices=["text", "json"], default="text",
+                          help="Output format (default: text)")
+    p_rules.set_defaults(func=cmd_rules)
 
     # setup-claude
     p_setup_claude = subparsers.add_parser("setup-claude",

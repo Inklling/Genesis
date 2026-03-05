@@ -391,3 +391,48 @@ def get_rules_for_language(lang: str) -> list[Rule]:
     if lang in LANGUAGE_RULES:
         rules = rules + LANGUAGE_RULES[lang]
     return rules
+
+
+_SEVERITY_ORDER = {
+    Severity.CRITICAL.value: 0,
+    Severity.WARNING.value: 1,
+    Severity.INFO.value: 2,
+}
+
+
+def list_all_rules() -> list[dict]:
+    """Return a deduplicated list of all rules with metadata.
+
+    Each dict: {"name", "severity", "category", "languages", "message", "suggestion"}.
+    Rules appearing in multiple language sets are merged (languages combined).
+    Universal/security rules get languages=["all"].
+    """
+    seen: dict[str, dict] = {}  # rule_name -> dict
+
+    def _add_rules(rules: list[Rule], languages: list[str]):
+        for _pattern, severity, category, name, message, suggestion in rules:
+            if name in seen:
+                existing_langs = seen[name]["languages"]
+                if existing_langs != ["all"]:
+                    for lang in languages:
+                        if lang not in existing_langs:
+                            existing_langs.append(lang)
+            else:
+                seen[name] = {
+                    "name": name,
+                    "severity": severity.value,
+                    "category": category.value,
+                    "languages": list(languages),
+                    "message": message,
+                    "suggestion": suggestion,
+                }
+
+    # Universal and security rules apply to all languages
+    _add_rules(UNIVERSAL_RULES, ["all"])
+    _add_rules(SECURITY_RULES, ["all"])
+
+    # Language-specific rules
+    for lang, rules in LANGUAGE_RULES.items():
+        _add_rules(rules, [lang])
+
+    return sorted(seen.values(), key=lambda r: (_SEVERITY_ORDER.get(r["severity"], 9), r["name"]))

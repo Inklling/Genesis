@@ -29,11 +29,84 @@ _INLINE_COMMENT_RE = {
     "slash": re.compile(r"""(?<!['"\\:])//"""),       # C-family style
 }
 
+# Single source of truth: language -> comment style ("hash" or "slash")
+_SLASH_LANGUAGES = frozenset({
+    "javascript", "typescript", "go", "rust", "java",
+    "c", "cpp", "csharp", "swift", "kotlin", "pine",
+})
+_HASH_LANGUAGES = frozenset({"python", "ruby", "bash"})
+
+
+def _get_comment_style(language: str) -> str | None:
+    """Return 'hash' or 'slash' for the language, or None if unknown."""
+    if language in _HASH_LANGUAGES:
+        return "hash"
+    if language in _SLASH_LANGUAGES:
+        return "slash"
+    return None
+
+
 # Regex to detect lines that are predominantly string content
 # Catches: var = 'javascript:eval(...)' and similar mid-line strings
 _STRING_CONTENT_RE = re.compile(
     r"""['"][^'"]*(?:eval|exec)\s*\([^'"]*['"]"""  # eval/exec inside string literal
 )
+
+# Inline suppression: doji:ignore or doji:ignore(rule-a, rule-b, ...)
+_DOJI_IGNORE_RE = re.compile(r'doji:ignore(?:\(([a-z0-9_,\s-]+)\))?')
+
+
+def _parse_line_suppression(line: str, language: str) -> set[str] | bool | None:
+    """Parse a doji:ignore directive from a line's trailing comment.
+
+    Returns:
+        True — suppress all rules (bare doji:ignore)
+        set[str] — suppress only these rule names
+        None — no suppression directive found
+    """
+    style = _get_comment_style(language)
+    if style is None:
+        return None
+
+    pattern = _INLINE_COMMENT_RE[style]
+
+    # Find the LAST comment marker — rightmost match is most likely the real
+    # trailing comment, not one inside a string earlier on the line.
+    last_match = None
+    for m in pattern.finditer(line):
+        last_match = m
+    if last_match is None:
+        return None
+
+    comment_text = line[last_match.start():]
+    ignore_match = _DOJI_IGNORE_RE.search(comment_text)
+    if not ignore_match:
+        return None
+
+    # No rule name in parens → suppress all
+    rule_text = ignore_match.group(1)
+    if rule_text is None:
+        return True
+
+    # Comma-separated rule names
+    return {r.strip() for r in rule_text.split(",") if r.strip()}
+
+
+def _is_line_suppressed(lines: list[str], line_no: int, rule: str, language: str) -> bool:
+    """Check if a finding on the given line is suppressed by an inline doji:ignore comment.
+
+    Only matches doji:ignore inside actual trailing comments (not string literals).
+    line_no is 1-based.
+    """
+    if line_no < 1 or line_no > len(lines):
+        return False
+
+    result = _parse_line_suppression(lines[line_no - 1], language)
+    if result is None:
+        return False
+    if result is True:
+        return True
+    return rule in result
 
 
 def _strip_inline_comment(line: str, language: str) -> str:
@@ -41,14 +114,11 @@ def _strip_inline_comment(line: str, language: str) -> str:
 
     Conservative: if in doubt, returns the full line (avoids hiding issues).
     """
-    if language in ("python", "ruby", "bash"):
-        m = _INLINE_COMMENT_RE["hash"].search(line)
-    elif language in ("javascript", "typescript", "go", "rust", "java",
-                      "c", "cpp", "csharp", "swift", "kotlin", "pine"):
-        m = _INLINE_COMMENT_RE["slash"].search(line)
-    else:
+    style = _get_comment_style(language)
+    if style is None:
         return line
 
+    m = _INLINE_COMMENT_RE[style].search(line)
     if m:
         return line[:m.start()]
     return line
@@ -88,10 +158,7 @@ def run_regex_checks(content: str, filepath: str, language: str,
     lines = content.splitlines()
 
     # Language-aware comment prefixes for full-line detection
-    comment_prefixes = {"#"}
-    if language in ("javascript", "typescript", "go", "rust", "java",
-                     "c", "cpp", "csharp", "swift", "kotlin", "pine"):
-        comment_prefixes = {"//"}
+    comment_prefixes = {"//"}  if language in _SLASH_LANGUAGES else {"#"}
 
     # Block comment state tracking
     in_block_comment = False
@@ -103,8 +170,7 @@ def run_regex_checks(content: str, filepath: str, language: str,
     elif language in ("html", "css"):
         block_open, block_close = "<!--", "-->"
         alt_block_open, alt_block_close = "/*", "*/"
-    elif language in ("javascript", "typescript", "go", "rust", "java",
-                      "c", "cpp", "csharp", "swift", "kotlin", "pine", "css"):
+    elif language in _SLASH_LANGUAGES:
         block_open, block_close = "/*", "*/"
         alt_block_open, alt_block_close = None, None
     else:
@@ -162,6 +228,22 @@ def run_regex_checks(content: str, filepath: str, language: str,
             and not stripped.startswith('"""') and not stripped.startswith("'''")
         )
 
+        # Inline suppression: parse once per line, reuse for all rule checks.
+        # Lazy — only computed on first rule match (most lines have zero matches).
+        line_suppression = None  # sentinel; computed on demand
+        line_suppression_parsed = False
+
+        def _line_is_suppressed(rule: str) -> bool:
+            nonlocal line_suppression, line_suppression_parsed
+            if not line_suppression_parsed:
+                line_suppression = _parse_line_suppression(line, language)
+                line_suppression_parsed = True
+            if line_suppression is None:
+                return False
+            if line_suppression is True:
+                return True
+            return rule in line_suppression
+
         for pattern, severity, category, rule_name, message, suggestion in rules:
             # Comment lines: only run comment-targeting rules
             if is_comment and rule_name not in _COMMENT_RULES:
@@ -195,6 +277,10 @@ def run_regex_checks(content: str, filepath: str, language: str,
                     if "SafeLoader" in context or "safe_load" in context:
                         continue
 
+                # Inline suppression: doji:ignore or doji:ignore(rule-name)
+                if _line_is_suppressed(rule_name):
+                    continue
+
                 findings.append(Finding(
                     file=filepath,
                     line=line_num,
@@ -210,6 +296,8 @@ def run_regex_checks(content: str, filepath: str, language: str,
         # Custom rules: match against the full line (no comment stripping)
         for pattern, severity, category, rule_name, message, suggestion in applicable_custom_rules:
             if pattern.search(line):
+                if _line_is_suppressed(rule_name):
+                    continue
                 findings.append(Finding(
                     file=filepath,
                     line=line_num,
@@ -647,6 +735,31 @@ def analyze_file_static(filepath: str, content: str, language: str,
         findings.extend(check_feature_envy(semantics, filepath))
         findings.extend(check_long_method(semantics, filepath))
         findings.extend(check_semantic_clones({filepath: semantics}))
+
+    # Inline suppression post-filter for AST/semantic findings.
+    # Regex findings (Source.STATIC) are already filtered in run_regex_checks,
+    # so only check AST/semantic findings here. Cache parse per-line.
+    lines = content.splitlines()
+    _suppression_cache: dict[int, set[str] | bool | None] = {}
+
+    def _check_suppressed(line_no: int, rule: str) -> bool:
+        if line_no not in _suppression_cache:
+            if line_no < 1 or line_no > len(lines):
+                _suppression_cache[line_no] = None
+            else:
+                _suppression_cache[line_no] = _parse_line_suppression(
+                    lines[line_no - 1], language)
+        result = _suppression_cache[line_no]
+        if result is None:
+            return False
+        if result is True:
+            return True
+        return rule in result
+
+    findings = [
+        f for f in findings
+        if f.source == Source.STATIC or not _check_suppressed(f.line, f.rule)
+    ]
 
     # Deduplicate: same file + line + rule
     seen = set()
