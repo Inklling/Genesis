@@ -553,22 +553,31 @@ def _is_safe_regex(pattern_str: str) -> bool:
     """Check if a regex pattern is safe from ReDoS attacks.
 
     Rejects nested quantifiers (e.g., (a+)+) and test-runs the compiled
-    pattern against a long string to catch catastrophic backtracking.
+    pattern against adversarial strings to catch catastrophic backtracking.
     Returns True for patterns that are safe (or merely invalid — invalid
     patterns are handled separately by re.compile error handling).
     """
+    # Reject patterns that are excessively long
+    if len(pattern_str) > 500:
+        return False
     # Reject nested quantifiers: a group containing a quantifier, with a
     # quantifier on the group itself — e.g. (a+)+, (x*){2,}
     if re.search(r'\([^)]*[+*?{][^)]*\)[+*?{]', pattern_str):
         return False
-    # Test-run: compile and match against a 1000-char string
+    # Reject alternation with single-char overlapping branches inside quantified groups
+    # e.g. (a|a)+, but NOT (error|warning)+ which is safe
+    if re.search(r'\(([a-zA-Z])\|(\1)\)[+*{]', pattern_str):
+        return False
+    # Test-run: compile and match against adversarial strings
     try:
         compiled = re.compile(pattern_str)
-        compiled.search("a" * 1000)
+        # Test against multiple adversarial inputs
+        for test_str in ["a" * 10000, "b" * 10000, "ab" * 5000, "\x00" * 10000]:
+            compiled.search(test_str)
     except re.error:
         # Invalid regex — let the caller's re.compile() handle the error message
         return True
-    except RecursionError:
+    except (RecursionError, MemoryError):
         return False
     return True
 

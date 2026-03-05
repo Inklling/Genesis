@@ -9,9 +9,12 @@ Returns None when tree-sitter is not installed (graceful degradation).
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from collections.abc import Iterator
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 from .lang_config import get_config, LanguageConfig
 
@@ -683,7 +686,26 @@ def extract_semantics(content: str, filepath: str, language: str) -> Optional[Fi
         return None
 
     source_bytes = content.encode("utf-8")
-    tree = parser.parse(source_bytes)
+    try:
+        tree = parser.parse(source_bytes)
+    except (MemoryError, RecursionError):
+        logger.warning("Tree-sitter parsing failed (resource limit) for %s", filepath)
+        return None
+
+    # Guard against pathologically deep ASTs
+    def _tree_depth(node, max_depth=1000):
+        depth = 0
+        current = node
+        while current.child_count > 0:
+            current = current.children[0]
+            depth += 1
+            if depth > max_depth:
+                return depth
+        return depth
+
+    if _tree_depth(tree.root_node) > 1000:
+        logger.warning("AST too deep (>1000) for %s, skipping semantic analysis", filepath)
+        return None
 
     extractor = _Extractor(source_bytes, config, filepath, language)
     extractor.extract(tree.root_node)

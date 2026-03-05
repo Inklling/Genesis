@@ -583,7 +583,10 @@ def run_tree_sitter_checks(content: str, filepath: str,
         return []  # Language not available in installed pack
 
     source_bytes = content.encode("utf-8")
-    tree = parser.parse(source_bytes)
+    try:
+        tree = parser.parse(source_bytes)
+    except (MemoryError, RecursionError):
+        return []
 
     findings = []
     for check_fn in ALL_CHECKS:

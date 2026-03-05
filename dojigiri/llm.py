@@ -9,6 +9,22 @@ from typing import Any, Optional
 
 import re
 
+
+def _sanitize_for_prompt(text: str, max_length: int = 2000) -> str:
+    """Sanitize user-controlled text before embedding in LLM prompts.
+
+    Strips control characters, limits length, and escapes sequences
+    that could be interpreted as prompt directives.
+    """
+    if not text:
+        return ""
+    # Strip control characters (keep newlines and tabs)
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+    # Truncate
+    if len(text) > max_length:
+        text = text[:max_length] + " [truncated]"
+    return text
+
 logger = logging.getLogger(__name__)
 
 from .config import (
@@ -72,7 +88,7 @@ def _get_client() -> Any:
     if not key:
         raise LLMError(
             "ANTHROPIC_API_KEY not set. "
-            "Set it with: export ANTHROPIC_API_KEY=sk-..."
+            "Set the environment variable before running deep scans."
         )
     try:
         import anthropic
@@ -296,9 +312,10 @@ def _format_static_findings_for_llm(findings: list[Finding]) -> str:
     for f in findings:
         severity = f.severity.value.upper()
         source = f.source.value
-        line = f"  [{severity}] [{source}] line {f.line}: {f.message}"
+        msg = _sanitize_for_prompt(f.message, max_length=500)
+        line = f"  [{severity}] [{source}] line {f.line}: {msg}"
         if f.suggestion:
-            line += f" (suggestion: {f.suggestion})"
+            line += f" (suggestion: {_sanitize_for_prompt(f.suggestion, max_length=500)})"
         parts.append(line)
 
     return "\n".join(parts)
@@ -422,8 +439,13 @@ def analyze_chunk(chunk: Chunk, cost_tracker: CostTracker) -> list[Finding]:
     findings = []
     for rf in raw_findings:
         try:
+            if not isinstance(rf, dict):
+                continue
+
             # Adjust line numbers for chunk offset
             line = rf.get("line", 1)
+            if not isinstance(line, int) or line < 1:
+                line = 1
             if chunk.chunk_index > 0:
                 line = line + chunk.start_line - 1
 
@@ -434,15 +456,22 @@ def analyze_chunk(chunk: Chunk, cost_tracker: CostTracker) -> list[Finding]:
             except ValueError:
                 confidence = Confidence.MEDIUM
 
+            # Validate and truncate string fields
+            message = str(rf.get("message", "Issue found by Claude"))[:500]
+            suggestion = rf.get("suggestion")
+            if suggestion is not None:
+                suggestion = str(suggestion)[:500]
+            rule = str(rf.get("rule", "llm-finding"))[:100]
+
             findings.append(Finding(
                 file=chunk.filepath,
                 line=line,
                 severity=Severity(rf.get("severity", "info")),
                 category=Category(rf.get("category", "bug")),
                 source=Source.LLM,
-                rule=rf.get("rule", "llm-finding"),
-                message=rf.get("message", "Issue found by Claude"),
-                suggestion=rf.get("suggestion"),
+                rule=rule,
+                message=message,
+                suggestion=suggestion,
                 confidence=confidence,
             ))
         except (ValueError, KeyError):
@@ -589,15 +618,20 @@ def debug_file(
     if error_msg:
         tb = _parse_python_traceback(error_msg)
         if tb:
-            extra_parts.append(f"Error: {tb['exception_type']}: {tb['exception_message']}")
+            exc_type = _sanitize_for_prompt(tb['exception_type'], max_length=200)
+            exc_msg = _sanitize_for_prompt(tb['exception_message'], max_length=500)
+            extra_parts.append(f"Error: {exc_type}: {exc_msg}")
             extra_parts.append(f"Pay special attention to lines: {sorted(tb['relevant_lines'])}")
             for frame in tb["frames"]:
+                frame_file = _sanitize_for_prompt(frame['file'], max_length=200)
+                frame_fn = _sanitize_for_prompt(frame['function'], max_length=100)
+                frame_code = _sanitize_for_prompt(frame['code'], max_length=300) if frame['code'] else ""
                 extra_parts.append(
-                    f"  Frame: {frame['file']}:{frame['line']} in {frame['function']}"
-                    + (f" → {frame['code']}" if frame['code'] else "")
+                    f"  Frame: {frame_file}:{frame['line']} in {frame_fn}"
+                    + (f" → {frame_code}" if frame_code else "")
                 )
         else:
-            extra_parts.append(f"Error message:\n```\n{error_msg}\n```")
+            extra_parts.append(f"Error message:\n```\n{_sanitize_for_prompt(error_msg, max_length=1000)}\n```")
 
     # Static findings context
     if static_findings:

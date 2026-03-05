@@ -649,8 +649,12 @@ _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
 def _git_run(args: list[str], cwd: str) -> subprocess.CompletedProcess:
     """Run a git command with safe UTF-8 encoding (avoids Windows cp1252 crashes)."""
+    # Validate cwd is a real local directory (prevent UNC path injection)
+    cwd_path = Path(cwd).resolve()
+    if not cwd_path.is_dir():
+        raise OSError(f"Invalid working directory: {cwd}")
     result = subprocess.run(
-        args, capture_output=True, cwd=cwd,
+        args, capture_output=True, cwd=str(cwd_path),
         encoding="utf-8", errors="replace",
     )
     # Ensure stdout/stderr are never None
