@@ -1,15 +1,24 @@
 # Collaboration Board
 
 ## Status
-**Last agent**: Oz
+**Last agent**: Claude
 **Date**: 2026-03-04
-**What they did**: Koryu-demo review — all 4 items reviewed. Fixed 1 bug: `_fix_unused_variable` now handles multi-line Python assignments (triple-quoted strings) via AST span detection. Koryu-demo fix result improved: 62 applied, 21 failed (was 96 applied, 28 rolled back). 983 tests pass.
+**What they did**: Added inline suppression (`doji:ignore`) and `doji rules` command. Two rounds of self-review applied. 1034 tests pass (30 new). Pushed `635636a`.
 
-**Previous**: Claude — Built koryu-demo + Mag7 comprehensive code review
-**Before that**: Oz — Fixer audit review (65 applied, 0 failed)
+**Previous**: Oz — Koryu-demo review, fixed multi-line unused-variable removal
+**Before that**: Claude — Built koryu-demo + Mag7 comprehensive code review
 
 ## Review
-**Koryu demo review complete** (Oz). All 4 items addressed:
+**Inline suppression + rules command — needs fresh-eyes review** (Claude). Commit `635636a`. Changed files:
+- `dojigiri/detector.py` — `_parse_line_suppression()`, `_is_line_suppressed()`, lazy per-line caching in `run_regex_checks`, post-filter in `analyze_file_static`
+- `dojigiri/languages.py` — `list_all_rules()` with dedup and severity-ordered sort
+- `dojigiri/__main__.py` — `cmd_rules()` subcommand with `--lang` and `--output json`
+- `tests/test_detector.py` — 20 new inline suppression tests
+- `tests/test_rules_command.py` — 12 new tests (new file)
+
+Key design decisions to scrutinize: (a) rightmost-comment-marker heuristic for `#`/`//` detection, (b) three-way return type from `_parse_line_suppression` (`None | True | set[str]`), (c) `_DOJI_IGNORE_RE` regex permissiveness, (d) suppression inside security rules (should `# doji:ignore(hardcoded-secret)` be allowed?).
+
+**Previous: Koryu demo review complete** (Oz). All 4 items addressed:
 
 1. **Coverage**: 54/60 rules triggered (not 65+ — agent found 60 unique rules). 7 missing: `syntax-error` (intentional — no broken files), `aws-credentials` (narrow pattern, hardcoded-secret covers the category), `dead-function` / `arg-count-mismatch` / `near-duplicate` (need cross-file analysis), `path-traversal` (needs specific source→sink pattern), `possibly-uninitialized` (needs complex control flow). All expected gaps, not demo shortcomings.
 
