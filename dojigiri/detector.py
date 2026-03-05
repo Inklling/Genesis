@@ -53,7 +53,10 @@ _STRING_CONTENT_RE = re.compile(
 )
 
 # Inline suppression: doji:ignore or doji:ignore(rule-a, rule-b, ...)
-_DOJI_IGNORE_RE = re.compile(r'doji:ignore(?:\(([a-z0-9_,\s-]+)\))?')
+# \b prevents matching "undoji:ignore" etc. Empty parens doji:ignore()
+# won't match the inner group ([a-z0-9...]+) so fall through to bare
+# doji:ignore behavior (suppress all) — this is intentional.
+_DOJI_IGNORE_RE = re.compile(r'\bdoji:ignore(?:\(([a-z0-9_,\s-]+)\))?')
 
 
 def _parse_line_suppression(line: str, language: str) -> set[str] | bool | None:
@@ -113,6 +116,10 @@ def _strip_inline_comment(line: str, language: str) -> str:
     """Strip trailing inline comment from a line for non-security checks.
 
     Conservative: if in doubt, returns the full line (avoids hiding issues).
+    Note: intentionally uses the FIRST comment marker match (via .search()),
+    unlike _parse_line_suppression which uses the LAST. Stripping from the
+    first '#' is the safe direction — it removes more, so more code is hidden
+    from the pattern matcher, meaning fewer false positives (not more).
     """
     style = _get_comment_style(language)
     if style is None:

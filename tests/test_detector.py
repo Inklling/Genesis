@@ -750,6 +750,11 @@ def test_parse_line_suppression_returns_none_for_no_directive():
     assert result is None
 
 
+def test_parse_line_suppression_unknown_language():
+    """Unknown language should return None (no comment style to parse)."""
+    assert _parse_line_suppression('code()  # doji:ignore', "unknown_lang") is None
+
+
 def test_inline_suppress_not_in_block_comment():
     """doji:ignore inside a block comment/docstring should NOT suppress later code."""
     code = '"""\n# doji:ignore(eval-usage)\n"""\nx = eval("code")\n'
