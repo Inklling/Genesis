@@ -1,15 +1,32 @@
-# dojigiri
+<p align="center">
+  <h1 align="center">童子切 Dojigiri</h1>
+  <p align="center"><em>Static analysis that cuts deep.</em></p>
+</p>
 
-Static analysis + LLM-powered code audit tool. 820+ tests, 12,500 lines, 28 modules.
+<p align="center">
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+"></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="MIT License"></a>
+  <a href="#"><img src="https://img.shields.io/badge/tests-1035%20passed-brightgreen.svg" alt="Tests"></a>
+  <a href="#"><img src="https://img.shields.io/badge/rules-40%2B-orange.svg" alt="Rules"></a>
+  <a href="#"><img src="https://img.shields.io/badge/languages-17-blueviolet.svg" alt="Languages"></a>
+</p>
 
-Dojigiri combines regex pattern matching, Python AST checks, and tree-sitter semantic analysis with optional Claude AI deep scans. It catches bugs, security issues, performance problems, and code smells across 7 languages — then optionally fixes them.
+---
+
+Dojigiri is a static analysis and code audit tool that combines regex pattern matching, Python AST checks, and **tree-sitter semantic analysis** with optional **Claude AI deep scans**. It catches bugs, security vulnerabilities, performance issues, and code smells across 17 languages — then optionally fixes them.
+
+Named after [童子切安綱](https://en.wikipedia.org/wiki/D%C5%8Djigiri) (Dōjigiri Yasutsuna), one of Japan's legendary Five Great Swords — a blade known for cutting through what others couldn't.
+
+## Install
+
+```bash
+pip install dojigiri
+```
 
 ## Quick Start
 
 ```bash
-pip install dojigiri
-
-# Scan a project (free, instant)
+# Scan a project
 doji scan .
 
 # Scan with auto-fix (dry run by default)
@@ -20,28 +37,31 @@ export ANTHROPIC_API_KEY="sk-..."
 doji scan . --deep --accept-remote
 ```
 
-## What Dojigiri Catches That Others Don't
+## Why Dojigiri
 
-| Capability | ruff | semgrep | dojigiri |
+| Capability | ruff | semgrep | **dojigiri** |
 |---|---|---|---|
-| Regex pattern rules | - | Yes | Yes (40+) |
-| AST-based checks | Yes | Yes | Yes |
-| Cross-file taint flow | - | Yes | Yes (path-sensitive) |
-| Null dereference tracking | - | - | Yes |
-| Type inference | - | - | Yes |
-| Resource leak detection | - | - | Yes |
-| Dependency graph analysis | - | - | Yes |
-| LLM-powered deep analysis | - | - | Yes |
-| Auto-fix (deterministic + LLM) | Yes | Yes | Yes |
-| SARIF output for GitHub | - | Yes | Yes |
+| Regex pattern rules | — | Yes | **Yes (40+)** |
+| AST-based checks | Yes | Yes | **Yes** |
+| Cross-file taint flow | — | Yes | **Yes (path-sensitive)** |
+| Null dereference tracking | — | — | **Yes** |
+| Type inference | — | — | **Yes** |
+| Resource leak detection | — | — | **Yes** |
+| Dependency graph analysis | — | — | **Yes** |
+| LLM-powered deep analysis | — | — | **Yes** |
+| Auto-fix (deterministic + LLM) | Yes | Yes | **Yes** |
+| SARIF output for GitHub | — | Yes | **Yes** |
+| Inline suppression | Yes | Yes | **Yes** |
 
-Dojigiri's tree-sitter engine builds control flow graphs, runs fixed-point dataflow analysis, and tracks taint through branches and sanitizers. The LLM layer adds context-aware analysis that static tools can't do.
+Dojigiri's tree-sitter engine builds control flow graphs, runs fixed-point dataflow analysis, and tracks taint through branches and sanitizers. The optional LLM layer adds context-aware analysis that static tools can't replicate.
 
-## Languages
+## Supported Languages
 
-Python, JavaScript, TypeScript, Go, Rust, Java, C/C++, Ruby, PHP, C#, Swift, Kotlin, SQL, HTML, CSS, Bash, Pine Script.
+**Full semantic analysis** (taint flow, null safety, type inference, CFG):
+Python · JavaScript · TypeScript · Go · Rust · Java · C#
 
-Tree-sitter semantic analysis (taint flow, null safety, type inference, CFG) is available for Python, JavaScript, TypeScript, Go, Rust, Java, and C#.
+**Pattern-based analysis:**
+C/C++ · Ruby · PHP · Swift · Kotlin · SQL · HTML · CSS · Bash · Pine Script
 
 ## Commands
 
@@ -49,7 +69,7 @@ Tree-sitter semantic analysis (taint flow, null safety, type inference, CFG) is 
 # Scanning
 doji scan <path>                    # Quick scan (static only, free)
 doji scan <path> --deep             # Deep scan (static + Claude AI)
-doji scan <path> --diff             # Only scan lines changed vs git main/master
+doji scan <path> --diff             # Only scan changed lines vs git main
 doji scan <path> --lang python      # Filter by language
 doji scan <path> --no-cache         # Skip file hash cache
 
@@ -57,14 +77,14 @@ doji scan <path> --no-cache         # Skip file hash cache
 doji scan . --ignore todo-marker,console-log
 doji scan . --min-severity warning
 doji scan . --min-confidence medium
-doji scan . --baseline latest       # Show only NEW findings vs last scan
+doji scan . --baseline latest       # Only NEW findings vs last scan
 
 # Output formats
 doji scan . --output json           # JSON for CI/CD
 doji scan . --output sarif          # SARIF for GitHub Code Scanning
 
 # Auto-fix
-doji fix <path>                     # Dry run — show what would change
+doji fix <path>                     # Dry run — show proposed changes
 doji fix <path> --apply             # Apply fixes
 doji fix <path> --apply --llm       # Include LLM-generated fixes
 doji fix <path> --rules bare-except,unused-import
@@ -77,9 +97,11 @@ doji analyze <dir> --no-llm         # Graph only (free, no API key)
 doji debug <file>                   # Bug hunting with Claude
 doji debug <file> --context auto    # Include related files automatically
 doji optimize <file>                # Performance suggestions
-doji explain <file>                 # Beginner-friendly code walkthrough
+doji explain <file>                 # Beginner-friendly walkthrough
 
 # Utilities
+doji rules                          # List all available rules
+doji rules --lang python            # Rules for a specific language
 doji report                         # Show latest scan results
 doji cost <path>                    # Estimate deep scan cost
 doji hook install                   # Add pre-commit hook
@@ -90,10 +112,10 @@ doji setup                          # Check environment
 
 ### Security
 - Hardcoded secrets and API keys (redacted in reports)
-- SQL injection (string formatting, f-strings, .format())
-- XSS (innerHTML, eval, document.write)
+- SQL injection (string formatting, f-strings, `.format()`)
+- XSS (`innerHTML`, `eval`, `document.write`)
 - Path traversal, shell injection
-- Unsafe deserialization (pickle, yaml.load)
+- Unsafe deserialization (`pickle`, `yaml.load`)
 - Weak cryptography (MD5, SHA1, DES, ECB)
 - AWS credential patterns
 - Taint flow from user input to dangerous sinks (path-sensitive)
@@ -102,18 +124,25 @@ doji setup                          # Check environment
 - Null/None dereference with branch-aware narrowing
 - Mutable default arguments
 - Bare except clauses
-- Type confusion (type() vs isinstance)
+- Type confusion (`type()` vs `isinstance`)
 - Shadowed builtins
 - Resource leaks (files, connections, sockets)
 - Unused variables and imports
 - Unreachable code
 
-### Performance & Style
+### Performance & Quality
 - High cyclomatic complexity
 - Too many function parameters
 - Semantic code clones (similarity > 0.85)
 - Dead code detection
 - TODO/FIXME tracking
+
+### Inline Suppression
+
+```python
+x = eval(user_input)  # doji:ignore(dangerous-eval)
+password = "hunter2"   # doji:ignore
+```
 
 ## Configuration
 
@@ -143,7 +172,7 @@ vendor/
 
 ## CI/CD Integration
 
-### GitHub Actions with SARIF
+### GitHub Actions
 
 ```yaml
 name: Code Scan
@@ -169,37 +198,37 @@ jobs:
           sarif_file: results.sarif
 ```
 
-### Baseline mode (only new findings)
+### Baseline Mode
 
 ```bash
-# On main branch — establish baseline
+# On main — establish baseline
 doji scan .
 
 # On feature branch — show only new issues
 doji scan . --baseline latest
 ```
 
-### Pre-commit hook
+### Pre-commit Hook
 
 ```bash
-doji hook install    # Adds doji to .git/hooks/pre-commit
-doji hook uninstall  # Removes it
+doji hook install     # Adds doji to .git/hooks/pre-commit
+doji hook uninstall   # Removes it
 ```
 
 ## Architecture
 
 ```
 dojigiri/
-├── __main__.py          CLI: scan, debug, optimize, analyze, fix, explain
+├── __main__.py          CLI entry point
 ├── analyzer.py          Scan orchestration, file collection, caching
 ├── detector.py          Static analysis engine (regex + AST + tree-sitter)
-├── languages.py         40+ regex pattern rules
-├── fixer.py             9 deterministic fixers + LLM fix orchestration
+├── languages.py         40+ pattern rules across 17 languages
+├── fixer.py             Deterministic fixers + LLM fix orchestration
 ├── depgraph.py          Dependency graph (import resolution, cycles, metrics)
 ├── project.py           Cross-file analysis orchestration
 ├── ts_semantic.py       Tree-sitter: function/class/variable extraction
 ├── ts_cfg.py            Control flow graph construction
-├── ts_taint.py          Taint analysis (flow-insensitive + path-sensitive)
+├── ts_taint.py          Taint analysis (path-sensitive, sanitizer-aware)
 ├── ts_types.py          Type inference + contract checking
 ├── ts_nullsafety.py     Null dereference + narrowing
 ├── ts_resource.py       Resource leak detection
@@ -218,13 +247,15 @@ dojigiri/
 └── hooks.py             Pre-commit hook management
 ```
 
+**28 modules · 12,500+ lines · 1,035 tests**
+
 ## Development
 
 ```bash
 git clone https://github.com/Inklling/Genesis
 cd Genesis
 pip install -e ".[dev]"
-pytest tests/ -q         # 820 tests, ~8s
+pytest tests/ -q         # 1035 tests, ~40s
 ```
 
 ## License
