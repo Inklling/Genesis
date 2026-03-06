@@ -1,4 +1,12 @@
-"""Split large files into overlapping chunks for LLM context management."""
+"""Split large files into overlapping chunks for LLM context management.
+
+Breaks source files into sized chunks with configurable overlap so they fit
+within LLM token limits. Uses AST awareness for Python to avoid mid-function splits.
+
+Called by: analyzer.py, llm.py.
+Calls into: config.py (CHUNK_SIZE, CHUNK_OVERLAP constants).
+Data in → Data out: file content (string) in → list[Chunk] out.
+"""
 
 import ast
 from dataclasses import dataclass

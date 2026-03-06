@@ -1,10 +1,12 @@
-"""Smart LLM integration: build focused prompts from static analysis findings.
+"""Smart prompt builder that uses static analysis findings to focus LLM attention.
 
-Uses static findings to direct LLM attention to specific concerns,
-producing higher-quality and cheaper results. Files with no static
-findings can skip LLM entirely.
+Takes static findings and builds targeted micro-queries around specific code
+regions, so the LLM reviews only the relevant snippets instead of whole files.
+Files with no static findings can skip LLM entirely, saving cost.
 
-v1.0.0: Micro-query builder — send targeted snippets instead of whole files.
+Called by: graph/project.py
+Calls into: config.py
+Data in -> Data out: list[Finding] -> focused prompt string
 """
 
 from __future__ import annotations

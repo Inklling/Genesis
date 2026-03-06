@@ -1,7 +1,11 @@
 """Cross-language AST checks powered by tree-sitter.
 
-Optional dependency — returns empty results when tree-sitter is not installed.
-Install with: pip install dojigiri[ast]
+Runs structural checks (empty catch, unused imports, etc.) against the parsed
+AST. Optional dependency — returns empty results when tree-sitter is not installed.
+
+Called by: detector.py
+Calls into: semantic/lang_config.py, config.py
+Data in → Data out: (source content, filepath, language) → list[Finding]
 """
 
 import re

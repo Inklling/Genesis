@@ -1,11 +1,12 @@
 """Architectural smell detection: god classes, feature envy, near-duplicates, long methods.
 
-v1.0.0: Added semantic similarity with normalized signatures (variable names
-stripped). Supplements existing structural hashing with multiset Jaccard on
-call sequences + count-based scope/assignment comparison.
+Semantic similarity with normalized signatures (variable names stripped).
+Uses structural hashing with multiset Jaccard on call sequences + count-based
+scope/assignment comparison. Returns [] when tree-sitter is not available.
 
-Operates on FileSemantics extracted by ts_semantic.py.
-Returns [] when tree-sitter is not available.
+Called by: detector.py, analyzer.py (cross-file clones)
+Calls into: semantic/core.py, config.py
+Data in → Data out: FileSemantics (or dict of them for cross-file) → list[Finding]
 """
 
 from __future__ import annotations

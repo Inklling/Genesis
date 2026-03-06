@@ -1,4 +1,12 @@
-"""Anthropic SDK wrapper — prompts, API calls, cost tracking."""
+"""Anthropic SDK wrapper — prompts, API calls, cost tracking.
+
+Sends code chunks to an LLM with structured prompts, parses responses into
+Finding objects, and tracks token usage and dollar cost per call.
+
+Called by: analyzer.py
+Calls into: config.py, llm_backend.py, chunker.py, metrics.py
+Data in -> Data out: code Chunk -> list[Finding] + cost metadata
+"""
 
 import json
 import logging

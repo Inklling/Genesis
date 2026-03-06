@@ -1,4 +1,12 @@
-"""Per-language tree-sitter node type mappings for cross-language AST checks."""
+"""Per-language tree-sitter node type mappings for cross-language AST checks.
+
+Maps abstract analysis concepts (imports, functions, catch blocks, etc.) to
+concrete tree-sitter node types for each supported language.
+
+Called by: semantic/core.py, semantic/checks.py, detector.py, taint.py, nullsafety.py, resource.py, types.py
+Calls into: nothing (pure config data)
+Data in → Data out: language string → LanguageConfig
+"""
 
 from dataclasses import dataclass, field
 

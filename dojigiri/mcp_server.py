@@ -1,16 +1,13 @@
-"""MCP server exposing Dojigiri static analysis tools to Claude Code.
+"""FastMCP server exposing Dojigiri static analysis tools to AI agents.
 
-Start with: python -m dojigiri mcp
-Configure with: python -m dojigiri setup-claude
+Runs as a subprocess via MCP protocol. Provides five tools: doji_scan,
+doji_scan_file, doji_fix, doji_explain, and doji_analyze_project.
+All tools return concise plain text, not JSON. Errors return as strings.
 
-Tools:
-  doji_scan         — Scan files/dirs for issues (the workhorse)
-  doji_scan_file    — Quick single-file scan
-  doji_fix          — Show before/after fixes without applying
-  doji_explain      — Structural understanding of a file
-  doji_analyze_project — Cross-file: deps, dead code, cycles
-
-All tools return concise text, not JSON. Errors return as strings.
+Called by: external (MCP protocol, e.g. Claude Code)
+Calls into: config.py, analyzer.py, mcp_format.py, semantic/explain.py,
+            graph/project.py, fixer.py
+Data in -> Data out: tool requests (file paths, options) -> formatted text
 """
 
 from __future__ import annotations

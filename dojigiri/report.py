@@ -1,4 +1,12 @@
-"""Console formatting — severity colors, findings display, summaries."""
+"""Console output renderer with ANSI severity colors and summary tables.
+
+Formats a ScanReport into human-readable terminal output with color-coded
+severities, grouped findings, and summary statistics.
+
+Called by: __main__.py
+Calls into: config.py
+Data in -> Data out: ScanReport -> stdout (ANSI-colored text)
+"""
 
 import json
 import sys

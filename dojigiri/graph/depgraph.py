@@ -1,7 +1,12 @@
-"""Dependency graph engine — pure Python, no LLM, no external deps.
+"""Dependency graph and call graph engine.
 
-Builds a directed graph of file-level imports for Python and JS/TS projects.
-Detects cycles, dead modules, hub files, and computes coupling metrics.
+Builds directed graphs of file-level imports (DepGraph) and function calls
+(CallGraph) for Python and JS/TS projects. Detects import cycles, dead
+modules, hub files, and computes coupling metrics (GraphMetrics).
+
+Called by: graph/callgraph.py, graph/project.py
+Calls into: config.py (LANGUAGE_EXTENSIONS)
+Data in -> Data out: source directory -> DepGraph, CallGraph, GraphMetrics
 """
 
 import ast as ast_mod

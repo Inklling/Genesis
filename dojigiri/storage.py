@@ -1,4 +1,12 @@
-"""Persistent JSON reports and file hash caching for incremental scans."""
+"""Persistent JSON reports and file hash caching for incremental scans.
+
+Saves scan results to timestamped JSON files and maintains a SHA-256 hash
+cache so unchanged files can be skipped on subsequent runs.
+
+Called by: analyzer.py, __main__.py.
+Calls into: config.py (report paths only).
+Data in → Data out: ScanReport / file paths in → JSON files + SHA-256 cache out.
+"""
 
 import hashlib
 import json

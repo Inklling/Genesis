@@ -1,4 +1,12 @@
-"""Session metrics — structured observability for scan and fix operations."""
+"""Session observability — structured metrics for scan and fix operations.
+
+Collects timing, token counts, finding counts, and error rates during a scan
+session. Persists metrics to disk as JSON for post-hoc analysis.
+
+Called by: llm.py, detector.py, fixer.py
+Calls into: nothing (standalone, only imports config.STORAGE_DIR)
+Data in -> Data out: scan events (timing, counts) -> SessionMetrics dataclass
+"""
 
 import json
 import logging

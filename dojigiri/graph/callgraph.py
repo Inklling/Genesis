@@ -1,6 +1,12 @@
-"""Call graph analysis: dead functions and argument count mismatches.
+"""Dead function detection and argument count mismatch analysis.
 
-Operates on CallGraph built by depgraph.build_call_graph().
+Operates on the CallGraph and DepGraph built by depgraph.build_call_graph().
+Identifies functions that are defined but never called, and call sites where
+the argument count doesn't match the function signature.
+
+Called by: graph/project.py (lazy import inside analyze_project)
+Calls into: graph/depgraph.py (CallGraph, DepGraph), config.py (Finding, Severity, etc.)
+Data in -> Data out: CallGraph + DepGraph -> list[Finding]
 """
 
 from __future__ import annotations

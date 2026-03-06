@@ -1,7 +1,12 @@
-"""AI-friendly output formatting for MCP tool responses.
+"""AI-friendly plain-text formatter for MCP tool responses.
 
 Transforms dojigiri dataclasses into concise text optimized for LLM consumption.
-No ANSI colors, no JSON nesting — just clean, scannable text.
+No ANSI colors, no JSON nesting — just clean, scannable text that fits in
+a tool-response context window.
+
+Called by: mcp_server.py
+Calls into: config.py, semantic/explain.py
+Data in -> Data out: ScanReport -> plain text string
 """
 
 from __future__ import annotations

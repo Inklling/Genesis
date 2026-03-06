@@ -3,8 +3,11 @@
 Walks the tree-sitter AST once per file and extracts assignments, references,
 function definitions, function calls, class definitions, and scope information.
 All other semantic modules operate on these extracted data structures.
-
 Returns None when tree-sitter is not installed (graceful degradation).
+
+Called by: detector.py, fixer.py, mcp_server.py
+Calls into: semantic/lang_config.py
+Data in → Data out: (source bytes, filepath, language) → FileSemantics
 """
 
 from __future__ import annotations

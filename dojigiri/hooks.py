@@ -1,4 +1,12 @@
-"""Pre-commit hook management — install/uninstall doji git hooks."""
+"""Git pre-commit hook management — install and uninstall doji hooks.
+
+Writes a shell script into .git/hooks/pre-commit that runs doji on staged
+files before each commit. Detects bundled exe vs. pip install for the command.
+
+Called by: __main__.py
+Calls into: config.py (is_bundled, get_exe_path)
+Data in -> Data out: git repo path -> hook file written/removed on disk
+"""
 
 import stat
 import sys

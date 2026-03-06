@@ -1,4 +1,12 @@
-"""CWE and NIST SP 800-53 compliance mappings for all Dojigiri rules."""
+"""CWE and NIST SP 800-53 compliance mapping tables for all Dojigiri rules.
+
+Pure data module — maps rule names to CWE IDs and NIST control families.
+Used to enrich findings with industry-standard compliance references.
+
+Called by: config.py (Finding.to_dict), report_html.py, semantic/explain.py
+Calls into: nothing (pure data, no dojigiri imports)
+Data in -> Data out: rule name string -> CWE/NIST identifier strings
+"""
 
 from typing import Optional
 

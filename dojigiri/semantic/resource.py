@@ -3,8 +3,11 @@
 Tracks resource open/close operations per function. At exit blocks, reports
 unclosed resources. Detects context managers (with/using blocks) as automatic
 close. Also detects try/finally patterns as safe cleanup.
-
 Returns [] when tree-sitter is not available or no CFG.
+
+Called by: detector.py
+Calls into: semantic/lang_config.py, semantic/core.py, semantic/cfg.py, config.py
+Data in → Data out: FileSemantics + CFG → list[Finding] (unclosed files/connections)
 """
 
 from __future__ import annotations

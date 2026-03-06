@@ -1,4 +1,12 @@
-"""Orchestrator: static → LLM pipeline, file/directory scanning."""
+"""Orchestrator: static analysis → LLM pipeline, file and directory scanning.
+
+Walks a directory tree (or single file), runs static detection, optionally
+sends chunks through the LLM for deeper analysis, and assembles the results.
+
+Called by: __main__.py (CLI entry), mcp_server.py, graph/project.py.
+Calls into: config.py, detector.py, chunker.py, llm.py, storage.py, semantic/smells.py.
+Data in → Data out: Path (file or directory) in → ScanReport out.
+"""
 
 import fnmatch
 import logging

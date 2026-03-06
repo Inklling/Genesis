@@ -1,6 +1,12 @@
 """Shared tree-sitter node helpers.
 
-Avoids duplicating these tiny one-liners in ts_cfg.py and ts_semantic.py.
+Small utility functions for extracting text and line numbers from tree-sitter
+nodes. Avoids duplicating these one-liners across semantic modules.
+
+Called by: semantic/core.py, semantic/checks.py, semantic/cfg.py, semantic/taint.py,
+          semantic/types.py, semantic/nullsafety.py, semantic/resource.py, semantic/smells.py
+Calls into: nothing (standalone utility)
+Data in → Data out: tree-sitter Node → text string or line number
 """
 
 from __future__ import annotations

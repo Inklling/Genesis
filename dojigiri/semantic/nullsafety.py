@@ -7,6 +7,10 @@ Uses type inference results to find cases where:
 
 Supports conditional narrowing: suppresses inside `if x is not None:` bodies.
 Returns [] when type info is unavailable.
+
+Called by: detector.py
+Calls into: semantic/lang_config.py, semantic/core.py, semantic/types.py, semantic/cfg.py, config.py
+Data in → Data out: FileSemantics + FileTypeMap → list[Finding]
 """
 
 from __future__ import annotations

@@ -7,6 +7,10 @@ Two modes:
 
 Operates on FileSemantics + source bytes for pattern matching.
 Returns [] when tree-sitter is not available.
+
+Called by: detector.py
+Calls into: config.py, semantic/lang_config.py, semantic/core.py, semantic/cfg.py
+Data in → Data out: FileSemantics + CFG → list[Finding] (injection vulnerabilities)
 """
 
 from __future__ import annotations

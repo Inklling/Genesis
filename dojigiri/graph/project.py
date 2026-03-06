@@ -1,4 +1,14 @@
-"""Project analysis orchestrator — ties depgraph + LLM + existing infrastructure."""
+"""Cross-file project analysis orchestrator.
+
+Ties together dependency graphing, call graph analysis, per-file static
+analysis, and optional LLM-powered synthesis into a single ProjectAnalysis
+result. This is the main entry point for whole-project scans.
+
+Called by: __main__.py (scan command), mcp_server.py
+Calls into: graph/depgraph.py, graph/callgraph.py, config.py, analyzer.py,
+            detector.py, llm.py (lazy)
+Data in -> Data out: directory path -> ProjectAnalysis
+"""
 
 import ast as ast_mod
 import logging

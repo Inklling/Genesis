@@ -1,4 +1,12 @@
-"""Data structures, enums, paths, and LLM configuration."""
+"""Data structures, enums, paths, and LLM configuration.
+
+Defines the core types used everywhere: Finding, FileAnalysis, ScanReport,
+Severity, Category, Source, Fix, and constants like CHUNK_SIZE / CHUNK_OVERLAP.
+
+Called by: virtually every other module in the package.
+Calls into: nothing — this is a leaf module with no dojigiri imports.
+Data in → Data out: no I/O; provides shared types and configuration values.
+"""
 
 import logging
 import sys

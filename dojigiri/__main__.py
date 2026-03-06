@@ -1,4 +1,15 @@
-"""CLI entry point: scan, debug, optimize, analyze, fix, report, cost, setup."""
+"""CLI entry point for the `doji` command.
+
+Parses arguments and dispatches to subcommands: scan, debug, optimize,
+analyze (project-level), fix, report, cost, setup, and hooks. Orchestrates
+the full pipeline from file discovery through analysis to output/reporting.
+
+Called by: user (python -m dojigiri / doji command)
+Calls into: config.py, analyzer.py, detector.py, storage.py, report.py,
+            report_html.py, fixer.py, hooks.py, graph/project.py,
+            semantic/explain.py, compliance.py, llm.py, metrics.py
+Data in -> Data out: CLI args -> console output + saved reports
+"""
 
 import argparse
 import sys

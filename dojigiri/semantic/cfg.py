@@ -2,9 +2,11 @@
 
 Builds a per-function CFG with basic blocks, successor/predecessor edges,
 entry/exit blocks. Used by path-sensitive taint analysis and resource leak
-detection.
+detection. Returns empty dict when tree-sitter is not available.
 
-Returns empty dict when tree-sitter is not available (graceful degradation).
+Called by: detector.py, taint.py, nullsafety.py, resource.py, types.py
+Calls into: semantic/lang_config.py, semantic/core.py
+Data in → Data out: FileSemantics + source bytes → dict[scope_id, FunctionCFG]
 """
 
 from __future__ import annotations

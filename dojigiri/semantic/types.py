@@ -2,8 +2,11 @@
 
 Builds a FileTypeMap mapping (variable_name, scope_id) → TypeInfo.
 Used by null safety checks and contract inference.
-
 Returns empty FileTypeMap when tree-sitter is not available.
+
+Called by: detector.py, nullsafety.py
+Calls into: semantic/lang_config.py, semantic/core.py, semantic/cfg.py
+Data in → Data out: FileSemantics → FileTypeMap
 """
 
 from __future__ import annotations

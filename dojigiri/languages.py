@@ -1,4 +1,12 @@
-"""Language-specific bug patterns — regex rules for static analysis."""
+"""Language-specific bug patterns — regex rules for static analysis.
+
+Defines compiled regex rules for each supported language (Python, JS/TS, Go,
+Java, C/C++, etc.), each tagged with a Severity and Category.
+
+Called by: detector.py.
+Calls into: config.py (Severity and Category enums only).
+Data in → Data out: language string in → list[Rule] out.
+"""
 
 import re
 from .config import Severity, Category

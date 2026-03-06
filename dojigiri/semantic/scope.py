@@ -1,7 +1,12 @@
 """Scope-based analysis: unused variables, shadowing, uninitialized access.
 
-Operates on FileSemantics extracted by ts_semantic.py.
+Walks the scope tree from FileSemantics to detect variables that are assigned
+but never read, names that shadow outer scopes, and reads before assignment.
 Returns [] when tree-sitter is not available.
+
+Called by: detector.py
+Calls into: semantic/core.py (FileSemantics), config.py
+Data in → Data out: FileSemantics → list[Finding] (unused vars, shadowing, uninitialized)
 """
 
 from __future__ import annotations

@@ -1,4 +1,12 @@
-"""HTML/PDF report generator for Dojigiri scan results."""
+"""HTML report generator for Dojigiri scan results.
+
+Renders a ScanReport into a self-contained HTML page with severity badges,
+CWE/NIST compliance tags, and collapsible file sections.
+
+Called by: __main__.py
+Calls into: config.py, compliance.py
+Data in -> Data out: ScanReport -> HTML string
+"""
 
 import html
 from datetime import datetime

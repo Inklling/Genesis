@@ -1,4 +1,14 @@
-"""Static analysis engine — regex matching + Python AST parsing."""
+"""Static analysis engine — regex matching + Python AST parsing.
+
+Runs language-specific regex rules and, for Python files, a full suite of
+AST-based semantic checks (scope, taint, CFG, types, null-safety, resources).
+
+Called by: analyzer.py.
+Calls into: config.py, languages.py, semantic/checks.py, semantic/core.py,
+    semantic/scope.py, semantic/taint.py, semantic/cfg.py, semantic/types.py,
+    semantic/nullsafety.py, semantic/resource.py, semantic/smells.py.
+Data in → Data out: (filepath, content, language) in → list[Finding] out.
+"""
 
 import ast
 import logging

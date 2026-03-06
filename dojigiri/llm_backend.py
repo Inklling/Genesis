@@ -1,4 +1,12 @@
-"""LLM backend abstraction — Anthropic, OpenAI-compatible, Ollama."""
+"""LLM backend abstraction — Anthropic, OpenAI-compatible, Ollama.
+
+Provides a unified interface for multiple LLM providers. Each backend
+implements the same protocol so the caller (llm.py) is provider-agnostic.
+
+Called by: llm.py
+Calls into: nothing (uses urllib, anthropic SDK directly)
+Data in -> Data out: messages list -> LLMResponse (text + token counts)
+"""
 
 import json
 import logging

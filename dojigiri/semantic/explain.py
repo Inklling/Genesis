@@ -1,15 +1,12 @@
 """Tutorial mode: generate beginner-friendly explanations of code files.
 
-`doji explain <file>` generates:
-- File summary (what this file does)
-- Structure breakdown (what each function/class does)
-- Design pattern recognition
-- Finding explanations in plain language
-- Learning notes (things to learn from this code)
+`doji explain <file>` generates file summaries, structure breakdowns, design
+pattern recognition, finding explanations in plain language, and learning notes.
+Two modes: offline (default, structural + heuristic) and deep (LLM-powered).
 
-Two modes:
-- Offline (default): structural analysis + heuristic patterns + templates
-- Deep (--deep): LLM-powered for richer explanations
+Called by: mcp_server.py, __main__.py, mcp_format.py
+Calls into: semantic/core.py, semantic/types.py, config.py, compliance.py
+Data in → Data out: (source content, filepath, language) → FileExplanation
 """
 
 from __future__ import annotations

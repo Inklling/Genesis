@@ -1,4 +1,13 @@
-"""Fix engine — deterministic fixers, LLM fix orchestration, fix application."""
+"""Auto-fix engine — deterministic fixers, LLM fix orchestration, fix application.
+
+Takes a ScanReport and attempts to fix each finding, first trying deterministic
+regex/AST transforms, then falling back to LLM-generated patches. Produces a
+FixReport with before/after diffs and application status.
+
+Called by: __main__.py, mcp_server.py
+Calls into: config.py, detector.py, llm.py, semantic/core.py
+Data in -> Data out: ScanReport + file content -> FixReport (diffs + status)
+"""
 
 import ast
 import logging
