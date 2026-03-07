@@ -1,6 +1,7 @@
-"""Demo script with intentional issues for Wiz to find and fix."""
+"""Demo script with intentional issues for Dojigiri to find and fix."""
 
 import json
+import os
 
 API_KEY = os.environ["API_KEY"]
 DB_PASSWORD = os.environ["DB_PASSWORD"]
