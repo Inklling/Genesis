@@ -1,5 +1,9 @@
 # 童子切 Dojigiri
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![Tests](https://img.shields.io/badge/tests-1088%20passing-brightgreen.svg)]()
+
 Static analysis. Security, correctness, quality — across 17 languages.
 
 ```bash
@@ -93,6 +97,46 @@ jobs:
         with: { sarif_file: results.sarif }
 ```
 
+## Why Dojigiri
+
+Most static analyzers do one thing. Dojigiri layers three:
+
+- **Ruff, ESLint, golangci-lint** — fast linters, single language, pattern-only. Dojigiri adds semantic analysis (CFG, taint tracking, type inference) and crosses language boundaries.
+- **Semgrep, CodeQL** — powerful semantic engines, but require writing custom rules or querying databases. Dojigiri ships 50+ rules out of the box and adds LLM analysis for the patterns rules can't catch.
+- **AI code review tools** — LLM-only, no deterministic layer. Dojigiri runs static + semantic analysis first, then focuses the LLM on what the rules missed, grounding AI findings in real dataflow.
+
+The result: one tool that handles quick CI scans (no API key, 17 languages), semantic depth (taint tracking, null safety, clone detection), and AI-powered bug hunting — all from the same `doji` command.
+
+## The Team
+
+Dojigiri is built and maintained by a multi-expert AI team — each member a specialist.
+
+```
+                             S t a c k
+                               塔
+
+                               │
+               ┌───────────────┼───────────────┐
+               │               │               │
+          guard & craft    knowledge      direction
+               │               │               │
+          鷹  Taka        水  Mizu        石  Ishi
+             security         CS            philosophy
+               │               │               │
+          匠  Takumi      零  Rei        千空  Senku
+             craft            AI/ML           science
+                               │               │
+                          番  Ban          計  Kei
+                             safety          strategy
+
+                               │
+
+                Taka ── Takumi  ···········  /review
+                Mizu ── Rei  ··············  siblings
+                Ishi ── Senku  ········  continuity lab
+                Ban ── Taka  ··············  perimeter
+```
+
 ## Architecture
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full system map.
@@ -108,7 +152,9 @@ dojigiri/
   llm.py            Claude API, cost tracking
   llm_backend.py    Backend abstraction
   llm_focus.py      Targeted prompts from static findings
-  config.py         Data structures, constants
+  types.py          Core types (Finding, Severity, etc.)
+  config.py         Constants, project config
+  bundling.py       Nuitka standalone support
   metrics.py        Session metrics, history
   report.py         Console output (ANSI, JSON, SARIF)
   report_html.py    HTML reports
@@ -136,6 +182,17 @@ pip install -e ".[dev]"
 pytest tests/ -q
 ```
 
+## Limitations
+
+Dojigiri is a development aid, not a substitute for professional security audit.
+
+- **Static analysis has blind spots.** No tool can guarantee the absence of bugs or vulnerabilities. A clean scan does not mean the code is secure.
+- **AI findings are probabilistic.** Findings from `--deep` mode (marked `[llm]`) may contain false positives or miss real issues. Always review AI-generated findings.
+- **Auto-fix requires review.** LLM-generated fixes may change behavior in subtle ways that pass syntax validation but alter logic. Review all applied fixes.
+- **Adversarial code may influence AI analysis.** When scanning untrusted code, be aware that malicious code could contain prompt injection that suppresses LLM findings.
+
+See [PRIVACY.md](PRIVACY.md) for data handling, [TERMS.md](TERMS.md) for terms of use, and [SECURITY.md](SECURITY.md) to report vulnerabilities.
+
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE) for details.
