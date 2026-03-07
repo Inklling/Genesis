@@ -4,11 +4,13 @@ import os
 import sys
 import pytest
 from pathlib import Path
-from dojigiri.analyzer import (
+from dojigiri.discovery import (
     detect_language,
     should_skip_dir,
     should_skip_file,
     collect_files,
+)
+from dojigiri.analyzer import (
     filter_report,
     diff_reports,
     get_changed_lines,

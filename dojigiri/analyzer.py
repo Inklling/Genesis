@@ -1,14 +1,15 @@
-"""Orchestrator: static analysis → LLM pipeline, file and directory scanning.
+"""Orchestrator: static analysis → LLM pipeline.
 
-Walks a directory tree (or single file), runs static detection, optionally
-sends chunks through the LLM for deeper analysis, and assembles the results.
+Runs static detection, optionally sends chunks through the LLM for deeper
+analysis, and assembles the results. File discovery (collect_files,
+detect_language, skip helpers) lives in discovery.py.
 
-Called by: __main__.py (CLI entry), mcp_server.py, graph/project.py.
-Calls into: config.py, detector.py, chunker.py, llm.py, storage.py, semantic/smells.py.
+Called by: __main__.py (CLI entry), mcp_server.py.
+Calls into: discovery.py, config.py, detector.py, chunker.py, llm.py,
+            storage.py, semantic/smells.py.
 Data in → Data out: Path (file or directory) in → ScanReport out.
 """
 
-import fnmatch
 import logging
 import re
 import subprocess
@@ -23,10 +24,8 @@ logger = logging.getLogger(__name__)
 
 from .config import (
     Finding, FileAnalysis, ScanReport, CrossFileFinding, Severity, Confidence, Category, Source,
-    LANGUAGE_EXTENSIONS, SKIP_DIRS, SKIP_FILES, MAX_FILE_SIZE,
-    SENSITIVE_FILE_PATTERNS,
-    load_ignore_patterns,
 )
+from .discovery import detect_language, should_skip_dir, should_skip_file, collect_files  # noqa: F401 — re-exported
 from .detector import analyze_file_static
 from .chunker import chunk_file, estimate_tokens
 from .llm import analyze_chunk, CostTracker, LLMError
@@ -39,98 +38,6 @@ def _safe_enum(enum_cls, value):
         return enum_cls(value)
     except (ValueError, KeyError):
         return None
-
-
-def detect_language(filepath: Path) -> Optional[str]:
-    """Detect language from file extension."""
-    return LANGUAGE_EXTENSIONS.get(filepath.suffix.lower())
-
-
-def should_skip_dir(dirname: str) -> bool:
-    """Check if directory should be skipped."""
-    return dirname in SKIP_DIRS or dirname.startswith(".")
-
-
-def should_skip_file(filepath: Path) -> bool:
-    """Check if file should be skipped."""
-    if filepath.name in SKIP_FILES:
-        return True
-    # Block sensitive files (secrets, keys, credentials)
-    if any(fnmatch.fnmatch(filepath.name, pat) for pat in SENSITIVE_FILE_PATTERNS):
-        return True
-    if filepath.suffix.lower() not in LANGUAGE_EXTENSIONS:
-        return True
-    try:
-        if filepath.stat().st_size > MAX_FILE_SIZE:
-            return True
-        if filepath.stat().st_size == 0:
-            return True
-    except OSError:
-        return True
-    return False
-
-
-def collect_files(
-    root: Path,
-    language_filter: Optional[str] = None,
-) -> tuple[list[Path], int]:
-    """Walk directory tree and collect analyzable files.
-    Returns (files, skipped_count).
-    """
-    files = []
-    skipped = 0
-
-    # Load .doji-ignore patterns
-    ignore_root = root if root.is_dir() else root.parent
-    ignore_patterns = load_ignore_patterns(ignore_root)
-
-    if root.is_file():
-        if should_skip_file(root):
-            return [], 1
-        lang = detect_language(root)
-        if lang and (language_filter is None or lang == language_filter):
-            return [root], 0
-        return [], 1
-
-    resolved_root = root.resolve()
-
-    for item in sorted(root.rglob("*")):
-        # Skip directories
-        if item.is_dir():
-            continue
-        # Skip symlinks (prevents reading files outside project tree)
-        if item.is_symlink():
-            skipped += 1
-            continue
-        # Verify resolved path stays under project root (traversal protection)
-        try:
-            item.resolve().relative_to(resolved_root)
-        except ValueError:
-            skipped += 1
-            continue
-        # Check if any parent dir should be skipped
-        if any(should_skip_dir(p.name) for p in item.relative_to(root).parents):
-            skipped += 1
-            continue
-        if should_skip_file(item):
-            skipped += 1
-            continue
-        # Check .doji-ignore patterns
-        rel = str(item.relative_to(root))
-        if any(fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(item.name, pat)
-               for pat in ignore_patterns):
-            skipped += 1
-            continue
-        lang = detect_language(item)
-        if lang is None:
-            skipped += 1
-            continue
-        if language_filter and lang != language_filter:
-            skipped += 1
-            continue
-        files.append(item)
-
-    return files, skipped
 
 
 def _analyze_single_file(

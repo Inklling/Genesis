@@ -23,7 +23,8 @@ from .config import (
     CLASSIFICATION_LEVELS, PROFILES,
     load_project_config, compile_custom_rules, is_bundled, get_exe_path,
 )
-from .analyzer import scan_quick, scan_deep, scan_diff, cost_estimate, detect_language, filter_report, diff_reports
+from .analyzer import scan_quick, scan_deep, scan_diff, cost_estimate, filter_report, diff_reports
+from .discovery import detect_language
 from .detector import analyze_file_static
 from .storage import load_latest_report, load_baseline_report, list_reports
 from . import report as rpt
@@ -395,7 +396,7 @@ def _auto_discover_imports_v2(filepath: str, content: str, lang: str) -> dict[st
     """
     try:
         from .graph.depgraph import build_dependency_graph
-        from .analyzer import collect_files
+        from .discovery import collect_files
 
         fp = Path(filepath).resolve()
         project_root = fp.parent
@@ -665,7 +666,7 @@ def cmd_fix(args: argparse.Namespace) -> int:
             return 1
         files_to_fix = [(root, file_lang)]
     else:
-        from .analyzer import collect_files
+        from .discovery import collect_files
         collected, _ = collect_files(root, language_filter=lang)
         files_to_fix = []
         for fp in collected:

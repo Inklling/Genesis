@@ -5,7 +5,7 @@ analysis, and optional LLM-powered synthesis into a single ProjectAnalysis
 result. This is the main entry point for whole-project scans.
 
 Called by: __main__.py (scan command), mcp_server.py
-Calls into: graph/depgraph.py, graph/callgraph.py, config.py, analyzer.py,
+Calls into: graph/depgraph.py, graph/callgraph.py, config.py, discovery.py,
             detector.py, llm.py (lazy)
 Data in -> Data out: directory path -> ProjectAnalysis
 """
@@ -23,7 +23,7 @@ from ..config import (
     FileAnalysis, CrossFileFinding, ProjectAnalysis,
     Severity, Category, Confidence,
 )
-from ..analyzer import collect_files, detect_language
+from ..discovery import collect_files, detect_language
 from ..detector import analyze_file_static
 from .depgraph import build_dependency_graph, build_call_graph, compute_metrics, DepGraph, GraphMetrics
 

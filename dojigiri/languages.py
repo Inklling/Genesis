@@ -215,6 +215,22 @@ PYTHON_RULES: list[Rule] = _compile([
         "random module is not cryptographically secure",
         "Use secrets module for security-sensitive random values",
     ),
+    # Unsafe deserialization — marshal and shelve
+    (
+        r"\b(?:marshal\.loads?\s*\(|shelve\.open\s*\()",
+        Severity.CRITICAL, Category.SECURITY,
+        "unsafe-deserialization",
+        "marshal/shelve can execute arbitrary code during deserialization",
+        "Use json or msgpack for untrusted data; shelve is pickle-backed",
+    ),
+    # Insecure tempfile usage
+    (
+        r"\b(?:tempfile\.mktemp\s*\(|os\.tempnam\s*\(|os\.tmpnam\s*\()",
+        Severity.WARNING, Category.SECURITY,
+        "insecure-tempfile",
+        "mktemp/tempnam/tmpnam are vulnerable to race conditions (TOCTOU)",
+        "Use tempfile.mkstemp() or tempfile.NamedTemporaryFile() instead",
+    ),
 ])
 
 
@@ -378,6 +394,46 @@ SECURITY_RULES: list[Rule] = _compile([
         "insecure-ecb-mode",
         "ECB mode does not hide data patterns — insecure for most uses",
         "Use CBC, GCM, or CTR mode instead",
+    ),
+    # SSRF — URL constructed from user input passed to HTTP clients
+    (
+        r"""(?:requests\.(?:get|post|put|delete|patch|head)\s*\(|urllib\.request\.urlopen\s*\(|http\.client\.HTTP\w*Connection\s*\(|fetch\s*\(|axios\.(?:get|post|put|delete)\s*\(|http\.Get\s*\(|http\.Post\s*\()""",
+        Severity.WARNING, Category.SECURITY,
+        "ssrf-risk",
+        "HTTP request — verify URL is not constructed from user input (SSRF risk)",
+        "Validate URLs against an allowlist of domains/schemes before making requests",
+    ),
+    # SSTI — template rendering from string (not file)
+    (
+        r"""(?:Template\s*\(|render_template_string\s*\(|from_string\s*\(|Environment\s*\(\s*\)\.from_string|Jinja2\s*\(.*\bstring\b|new\s+Function\s*\()""",
+        Severity.CRITICAL, Category.SECURITY,
+        "ssti-risk",
+        "Template constructed from string — may allow server-side template injection",
+        "Use pre-compiled templates from files, never from user-controlled strings",
+    ),
+    # XXE — XML parsing without disabling external entities
+    (
+        r"""(?:xml\.etree\.ElementTree\.parse\s*\(|xml\.dom\.minidom\.parse\s*\(|xml\.sax\.parse\s*\(|lxml\.etree\.parse\s*\(|DocumentBuilderFactory|XMLReader|SAXParser|DOMParser\s*\(\))""",
+        Severity.WARNING, Category.SECURITY,
+        "xxe-risk",
+        "XML parsing — ensure external entities are disabled to prevent XXE attacks",
+        "Use defusedxml (Python), disable DTDs/external entities in parser config",
+    ),
+    # JWT — insecure algorithm or missing verification
+    (
+        r"""(?:jwt\.decode\s*\([^)]*(?:algorithms\s*=\s*\[['"]none['"]\]|verify\s*=\s*False|options\s*=\s*\{[^}]*'verify_\w+'\s*:\s*False)|\.decode\s*\(\s*token[^)]*algorithm\s*=\s*['"](?:none|HS256)['"])""",
+        Severity.CRITICAL, Category.SECURITY,
+        "jwt-insecure",
+        "JWT decoded with insecure settings — disabled verification or 'none' algorithm",
+        "Always verify JWT signatures with a strong algorithm (RS256/ES256) and validate claims",
+    ),
+    # Hardcoded IP addresses (not localhost/0.0.0.0)
+    (
+        r"""(?<!\d)(?!127\.0\.0\.1|0\.0\.0\.0|255\.255\.255\.255)(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)(?!\d)""",
+        Severity.INFO, Category.SECURITY,
+        "hardcoded-ip",
+        "Hardcoded IP address — may break in different environments",
+        "Use configuration files or environment variables for IP addresses",
     ),
 ])
 

@@ -62,6 +62,13 @@ CWE_MAP: dict[str, str] = {
     "logging-sensitive-data": "CWE-532",
     "insecure-crypto": "CWE-327",
     "insecure-ecb-mode": "CWE-327",
+    "ssrf-risk": "CWE-918",
+    "ssti-risk": "CWE-1336",
+    "xxe-risk": "CWE-611",
+    "jwt-insecure": "CWE-345",
+    "hardcoded-ip": "CWE-547",
+    "unsafe-deserialization": "CWE-502",
+    "insecure-tempfile": "CWE-377",
 
     # Semantic/AST rules (detector.py, semantic/)
     "syntax-error": "CWE-670",
@@ -129,6 +136,25 @@ NIST_MAP: dict[str, list[str]] = {
     # Deserialization
     "pickle-unsafe": ["SI-10", "SI-16"],
     "yaml-unsafe": ["SI-10", "SI-16"],
+    "unsafe-deserialization": ["SI-10", "SI-16"],
+
+    # SSRF
+    "ssrf-risk": ["SI-10", "SC-7"],
+
+    # SSTI
+    "ssti-risk": ["SI-10", "SI-16"],
+
+    # XXE
+    "xxe-risk": ["SI-10", "SC-4"],
+
+    # JWT
+    "jwt-insecure": ["SC-13", "IA-5"],
+
+    # Hardcoded config
+    "hardcoded-ip": ["CM-6"],
+
+    # Tempfile
+    "insecure-tempfile": ["SC-28"],
 
     # Cryptography
     "weak-hash": ["SC-13", "SC-12"],

@@ -112,9 +112,20 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             ("eval", "eval"), ("exec", "eval"),
             ("os.system", "system_cmd"), ("subprocess.run", "system_cmd"),
             ("subprocess.call", "system_cmd"), ("subprocess.Popen", "system_cmd"),
+            ("requests.get", "ssrf"), ("requests.post", "ssrf"),
+            ("urllib.request.urlopen", "ssrf"), ("httpx.get", "ssrf"),
+            ("Template", "ssti"), ("render_template_string", "ssti"),
+            ("from_string", "ssti"),
+            ("open", "path_traversal"), ("send_file", "path_traversal"),
+            ("pickle.loads", "deserialization"), ("yaml.load", "deserialization"),
         ],
         taint_sanitizer_patterns=[
             "html.escape", "bleach.clean", "markupsafe.escape",
+            "shlex.quote", "urllib.parse.quote", "urllib.parse.quote_plus",
+            "django.utils.html.escape", "django.utils.html.strip_tags",
+            "cgi.escape", "xml.sax.saxutils.escape",
+            "parameterized", "int", "float", "str.isdigit", "str.isalnum",
+            "re.sub", "os.path.basename", "pathlib.PurePath",
         ],
         # CFG control flow
         cfg_if_node_types=["if_statement"],
@@ -198,7 +209,11 @@ _JS_BASE = dict(
         ("document.write", "html_output"),
         ("child_process.exec", "system_cmd"),
     ],
-    taint_sanitizer_patterns=["DOMPurify.sanitize", "escapeHtml", "sanitizeHtml"],
+    taint_sanitizer_patterns=[
+        "DOMPurify.sanitize", "escapeHtml", "sanitizeHtml",
+        "encodeURIComponent", "encodeURI", "parseInt", "Number",
+        "validator.escape", "xss-filters", "he.encode",
+    ],
     cfg_if_node_types=["if_statement"],
     cfg_else_node_types=["else_clause"],
     cfg_for_node_types=["for_statement", "for_in_statement"],
@@ -264,7 +279,11 @@ LANGUAGE_CONFIGS.update({
             ("exec.Command", "system_cmd"), ("db.Exec", "sql_query"),
             ("db.Query", "sql_query"), ("fmt.Fprintf", "html_output"),
         ],
-        taint_sanitizer_patterns=["html.EscapeString", "template.HTMLEscapeString"],
+        taint_sanitizer_patterns=[
+            "html.EscapeString", "template.HTMLEscapeString",
+            "url.QueryEscape", "url.PathEscape", "strconv.Atoi",
+            "strconv.ParseInt", "filepath.Base", "filepath.Clean",
+        ],
         # CFG control flow
         cfg_if_node_types=["if_statement"],
         cfg_else_node_types=["else_clause"],
@@ -389,7 +408,11 @@ LANGUAGE_CONFIGS.update({
             ("Statement.execute", "sql_query"),
             ("PreparedStatement.execute", "sql_query"),
         ],
-        taint_sanitizer_patterns=["StringEscapeUtils.escapeHtml", "ESAPI.encoder"],
+        taint_sanitizer_patterns=[
+            "StringEscapeUtils.escapeHtml", "ESAPI.encoder",
+            "URLEncoder.encode", "Integer.parseInt", "Long.parseLong",
+            "Paths.get", "FilenameUtils.getName",
+        ],
         # CFG control flow
         cfg_if_node_types=["if_statement"],
         cfg_else_node_types=["else"],
@@ -456,7 +479,11 @@ LANGUAGE_CONFIGS.update({
             ("Process.Start", "system_cmd"),
             ("SqlCommand", "sql_query"), ("ExecuteNonQuery", "sql_query"),
         ],
-        taint_sanitizer_patterns=["HttpUtility.HtmlEncode", "WebUtility.HtmlEncode"],
+        taint_sanitizer_patterns=[
+            "HttpUtility.HtmlEncode", "WebUtility.HtmlEncode",
+            "Uri.EscapeDataString", "int.Parse", "int.TryParse",
+            "Path.GetFileName", "AntiXssEncoder.HtmlEncode",
+        ],
         # CFG control flow
         cfg_if_node_types=["if_statement"],
         cfg_else_node_types=["else_clause"],

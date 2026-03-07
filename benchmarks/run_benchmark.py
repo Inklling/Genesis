@@ -67,7 +67,7 @@ def clone_or_update(repo_name: str, repo_info: dict) -> Path:
 
 def scan_repo(repo_dir: Path, repo_info: dict) -> list[dict]:
     """Run doji scan on the repo paths and collect findings."""
-    from dojigiri.analyzer import collect_files, detect_language
+    from dojigiri.discovery import collect_files, detect_language
     from dojigiri.detector import analyze_file_static
 
     all_findings = []
