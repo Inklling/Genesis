@@ -13,6 +13,7 @@ Data in -> Data out: tool requests (file paths, options) -> formatted text
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Sequence
 
 from mcp.server.fastmcp import FastMCP
 
@@ -33,6 +34,47 @@ mcp = FastMCP(
 _SEVERITY_MAP = {"critical": Severity.CRITICAL, "warning": Severity.WARNING, "info": Severity.INFO}
 _SEVERITY_RANK = {Severity.CRITICAL: 0, Severity.WARNING: 1, Severity.INFO: 2}
 
+# ─── Path boundary validation ────────────────────────────────────────
+# Default: only allow paths under cwd. Extendable via .doji.toml:
+#   [dojigiri]
+#   mcp_allowed_roots = ["/other/project", "/data/shared"]
+
+_allowed_roots: list[Path] = [Path.cwd().resolve()]
+
+# Load extra allowed roots from .doji.toml at import time
+try:
+    from .config import load_project_config as _load_cfg
+    _mcp_cfg = _load_cfg(Path.cwd())
+    _extra = _mcp_cfg.get("mcp_allowed_roots", [])
+    if isinstance(_extra, list):
+        for _r in _extra:
+            _allowed_roots.append(Path(_r).resolve())
+except Exception:
+    pass  # Config loading is best-effort
+
+
+def configure_allowed_roots(extra_roots: Sequence[str | Path] | None = None) -> None:
+    """Reset allowed roots to cwd + any extras (e.g. from config)."""
+    _allowed_roots.clear()
+    _allowed_roots.append(Path.cwd().resolve())
+    if extra_roots:
+        for r in extra_roots:
+            _allowed_roots.append(Path(r).resolve())
+
+
+def _validate_path(path: Path) -> Path:
+    """Resolve *path* and verify it falls under an allowed root.
+
+    Returns the resolved path on success.
+    Raises ValueError if the path is outside every allowed root.
+    """
+    resolved = path.resolve()
+    for root in _allowed_roots:
+        if resolved.is_relative_to(root):
+            return resolved
+    roots_str = ", ".join(str(r) for r in _allowed_roots)
+    raise ValueError(f"Path '{path}' is outside allowed directories: {roots_str}")
+
 
 def _parse_severity(value: str) -> Severity | str:
     """Parse a severity string. Returns Severity on success, error string on failure."""
@@ -47,9 +89,9 @@ def _read_file(path: str) -> tuple[str, str, str]:
 
     Raises ValueError with a user-facing message on failure.
     """
-    from .analyzer import detect_language
+    from .discovery import detect_language
 
-    filepath = Path(path).resolve()
+    filepath = _validate_path(Path(path))
     if not filepath.is_file():
         raise ValueError(f"Error: '{path}' is not a file")
 
@@ -67,7 +109,7 @@ def _read_file(path: str) -> tuple[str, str, str]:
 
 def _collect_files_with_lang(root: Path) -> list[tuple[Path, str]]:
     """Collect analyzable files under root, each paired with its detected language."""
-    from .analyzer import detect_language, collect_files
+    from .discovery import detect_language, collect_files
 
     if root.is_file():
         lang = detect_language(root)
@@ -117,7 +159,10 @@ def doji_scan(
     if isinstance(sev, str):
         return sev
 
-    root = Path(path).resolve()
+    try:
+        root = _validate_path(Path(path))
+    except ValueError as e:
+        return str(e)
     if not root.exists():
         return f"Error: path '{path}' does not exist"
 
@@ -200,7 +245,10 @@ def doji_fix(
     if isinstance(sev, str):
         return sev
 
-    root = Path(path).resolve()
+    try:
+        root = _validate_path(Path(path))
+    except ValueError as e:
+        return str(e)
     if not root.exists():
         return f"Error: path '{path}' does not exist"
 
@@ -329,7 +377,10 @@ def doji_analyze_project(
     from .graph.project import analyze_project
     from .mcp_format import format_project_analysis
 
-    root = Path(path).resolve()
+    try:
+        root = _validate_path(Path(path))
+    except ValueError as e:
+        return str(e)
     if not root.is_dir():
         return f"Error: '{path}' is not a directory"
 
