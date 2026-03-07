@@ -797,8 +797,7 @@ def analyze_file_static(filepath: str, content: str, language: str,
         from .metrics import get_session
         session = get_session()
         if session:
-            session.files_scanned += 1
-            session.scan_duration_ms += _scan_ms
+            session.record_file(_scan_ms)
             for f in unique:
                 session.record_finding(f.rule, f.severity.value)
     except Exception:

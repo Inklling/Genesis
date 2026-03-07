@@ -10,6 +10,7 @@ Data in -> Data out: scan events (timing, counts) -> SessionMetrics dataclass
 
 import json
 import logging
+import threading
 import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
@@ -56,33 +57,48 @@ class SessionMetrics:
     llm_tokens_in: int = 0
     llm_tokens_out: int = 0
 
+    def record_file(self, scan_duration_ms: float = 0) -> None:
+        with _session_lock:
+            self.files_scanned += 1
+            self.scan_duration_ms += scan_duration_ms
+
     def record_finding(self, rule: str, severity: str) -> None:
-        self.total_findings += 1
-        self.findings_by_rule[rule] = self.findings_by_rule.get(rule, 0) + 1
-        self.findings_by_severity[severity] = self.findings_by_severity.get(severity, 0) + 1
+        with _session_lock:
+            self.total_findings += 1
+            self.findings_by_rule[rule] = self.findings_by_rule.get(rule, 0) + 1
+            self.findings_by_severity[severity] = self.findings_by_severity.get(severity, 0) + 1
 
     def record_fix(self, rule: str, succeeded: bool, duration_ms: float) -> None:
-        self.fixes_attempted += 1
-        if succeeded:
-            self.fixes_succeeded += 1
-        else:
-            self.fixes_failed += 1
+        with _session_lock:
+            self.fixes_attempted += 1
+            if succeeded:
+                self.fixes_succeeded += 1
+            else:
+                self.fixes_failed += 1
 
-        if rule not in self.fixes_by_rule:
-            self.fixes_by_rule[rule] = {"attempted": 0, "succeeded": 0, "failed": 0, "total_duration_ms": 0}
-        entry = self.fixes_by_rule[rule]
-        entry["attempted"] += 1
-        if succeeded:
-            entry["succeeded"] += 1
-        else:
-            entry["failed"] += 1
-        entry["total_duration_ms"] += duration_ms
+            if rule not in self.fixes_by_rule:
+                self.fixes_by_rule[rule] = {"attempted": 0, "succeeded": 0, "failed": 0, "total_duration_ms": 0}
+            entry = self.fixes_by_rule[rule]
+            entry["attempted"] += 1
+            if succeeded:
+                entry["succeeded"] += 1
+            else:
+                entry["failed"] += 1
+            entry["total_duration_ms"] += duration_ms
+
+    def record_fix_duration(self, duration_ms: float) -> None:
+        with _session_lock:
+            self.fix_duration_ms += duration_ms
 
     def record_llm_call(self, tokens_in: int, tokens_out: int) -> None:
-        self.llm_calls += 1
-        self.llm_tokens_in += tokens_in
-        self.llm_tokens_out += tokens_out
+        with _session_lock:
+            self.llm_calls += 1
+            self.llm_tokens_in += tokens_in
+            self.llm_tokens_out += tokens_out
 
+
+# Module-level lock for thread-safe access to _current_session and its fields
+_session_lock = threading.Lock()
 
 # Module-level current session — set by start_session(), used by instrument hooks
 _current_session: Optional[SessionMetrics] = None
@@ -91,21 +107,24 @@ _current_session: Optional[SessionMetrics] = None
 def start_session() -> SessionMetrics:
     """Start a new metrics session."""
     global _current_session
-    _current_session = SessionMetrics(started_at=datetime.now().isoformat(timespec="seconds"))
-    return _current_session
+    with _session_lock:
+        _current_session = SessionMetrics(started_at=datetime.now().isoformat(timespec="seconds"))
+        return _current_session
 
 
 def get_session() -> Optional[SessionMetrics]:
     """Get the current session metrics, or None if no session is active."""
-    return _current_session
+    with _session_lock:
+        return _current_session
 
 
 def end_session() -> Optional[SessionMetrics]:
     """End the current session and return its metrics."""
     global _current_session
-    session = _current_session
-    _current_session = None
-    return session
+    with _session_lock:
+        session = _current_session
+        _current_session = None
+        return session
 
 
 def save_session(metrics: SessionMetrics) -> Path:
