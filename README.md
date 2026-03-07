@@ -2,8 +2,6 @@
 
 Static analysis. Security, correctness, quality — across 17 languages.
 
-Named after [童子切安綱](https://en.wikipedia.org/wiki/D%C5%8Djigiri), one of Japan's Five Great Swords.
-
 ```bash
 pip install dojigiri
 ```
